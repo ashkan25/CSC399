@@ -7,17 +7,16 @@ import Constants
 import numpy as np
 
 mod = SourceModule("""
+#define CUDA_KERNEL_LOOP(i, n) \
+ for (int i = blockIdx.x * blockDim.x + threadIdx.x; i < (n); i += blockDim.x * gridDim.x)
 
-    #define CUDA_KERNEL_LOOP(i, n) \
-      for (int i = blockIdx.x * blockDim.x + threadIdx.x; i < (n); i += blockDim.x * gridDim.x)
-    
-    template <typename Dtype>
-    __global__ void forward(const int n, const Dtype* in, Dtype* out) {
-        
+    __global__ void forward(const int n, const float* in, float* out) {
+
         for (int i = blockIdx.x * blockDim.x + threadIdx.x; i < (n); i += blockDim.x * gridDim.x) {
             out[i] = in[i] > 0 ? in[i] : 0;
         }
     }
+
   """)
 
 num_inputs = 0  # TODO CALCULATE INPUT COUNT
