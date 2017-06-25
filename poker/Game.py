@@ -6,15 +6,66 @@ from pycuda.compiler import SourceModule
 import Constants
 import numpy as np
 
+
+# TODO Make sure you handle when matrix is bigger than NUM_BLOCKS*NUM_THREADS
 mod = SourceModule("""
 #define CUDA_KERNEL_LOOP(i, n) \
  for (int i = blockIdx.x * blockDim.x + threadIdx.x; i < (n); i += blockDim.x * gridDim.x)
 
-    __global__ void forward(const int n, const float* in, float* out) {
+    __global__ void relu(const int width, const int height, const float* in, float* out) {
 
-        for (int i = blockIdx.x * blockDim.x + threadIdx.x; i < (n); i += blockDim.x * gridDim.x) {
-            out[i] = in[i] > 0 ? in[i] : 0;
+        int row = blockIdx.y * blockDim.y + threadIdx.y;
+        int col = blockIdx.x * blockDim.x + threadIdx.x;
+        
+        if(row > height || col > width) {
+            return;
         }
+        
+        out[row * width + col] = in[row * width + col] > 0 ? in[row * width + col] : 0;
+    }
+    
+    
+    __device__ bool denominator = 0;
+    __global__ void softmax(const int width, const int height, const float* in, float* out) {
+    
+        int col = blockIdx.x * blockDim.x + threadIdx.x;
+        int row = blockIdx.y * blockDim.y + threadIdx.y;
+        
+        if (row > height || col > width) {
+            int index = col + row * N;
+        }
+        
+        int index = col + row * width;
+        atomicadd(denominator, expf(in[index]));
+        
+        // TODO Check if sync is needed. It only syncs for individual blocks, but atomic should sync for all blocks
+        __syncthreads(); 
+        
+        out[index] = in[index] / denominator;
+        
+    }
+    
+    // https://www.shodor.org/media/content/petascale/materials/UPModules/matrixMultiplication/moduleDocument.pdf
+    __global__ void forward_pass(const float* a, const float* b, float* c,
+                                const int a_width, const int b_width, const int c_width) {
+    
+        float c_value = 0.0;
+    
+        int row = blockIdx.y * blockDim.y + threadIdx.y;
+        int col = blockIdx.x * blockDim.x + threadIdx.x;
+        
+        if(row > a_width || col > b_width) {
+            return;
+        }
+        
+        for (int i = 0; i < a_width; i++) {
+            c_value += (a[row * a_width + i]) * (b[i * b_width + col]);
+        }
+        
+        // TODO It might be better to export ReLU to another kernel since it doesn't 
+        // ReLU function: max(x, 0)
+        c[row * c_width + col] = c_value > 0 ? c_value  : 0;
+    
     }
 
   """)
