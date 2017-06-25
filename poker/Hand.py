@@ -18,6 +18,7 @@ import numpy as np
 
 class Hand:
     def __init__(self):
+        # TODO Change hand representation to 1D array of size 52 to remove the need to flatten array every time
         self._hand = np.zeros((Constants.NUM_OF_SUITES, Constants.NUM_OF_VALUES))
 
     def reset_hand(self):
@@ -31,3 +32,6 @@ class Hand:
     def __str__(self):
         return str(self._hand)
 
+
+    def get_hand(self):
+	return self._hand

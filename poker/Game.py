@@ -25,18 +25,18 @@ mod = SourceModule("""
     }
     
     
-    __device__ bool denominator = 0;
+    __device__ float denominator = 0;
     __global__ void softmax(const int width, const int height, const float* in, float* out) {
     
         int col = blockIdx.x * blockDim.x + threadIdx.x;
         int row = blockIdx.y * blockDim.y + threadIdx.y;
         
         if (row > height || col > width) {
-            int index = col + row * N;
+            return;
         }
         
         int index = col + row * width;
-        atomicadd(denominator, expf(in[index]));
+        atomicAdd(&denominator, expf(in[index]));
         
         // TODO Check if sync is needed. It only syncs for individual blocks, but atomic should sync for all blocks
         __syncthreads(); 
@@ -70,7 +70,7 @@ mod = SourceModule("""
 
   """)
 
-num_inputs = 0  # TODO CALCULATE INPUT COUNT
+num_inputs = 52  # TODO CALCULATE INPUT COUNT
 num_outputs = 7
 num_hiddens = [500, 500]
 
@@ -152,12 +152,12 @@ class Game:
 # # Needs to be casted to numpy array. Python array does not have buffer interface
 # lookup_table = np.array(lookup_table)
 
-f = open("HandRanks.dat", "rb")
-lookup_table = np.fromfile(f, dtype=np.int32)
+#f = open("HandRanks.dat", "rb")
+#lookup_table = np.fromfile(f, dtype=np.int32)
 
-gpu_lookup_table = cuda.mem_alloc(lookup_table.nbytes)
-cuda.memcpy_htod(gpu_lookup_table, lookup_table)
-f.close()
+#gpu_lookup_table = cuda.mem_alloc(lookup_table.nbytes)
+#cuda.memcpy_htod(gpu_lookup_table, lookup_table)
+#f.close()
 
 game = Game()
 game.new_game()
@@ -167,3 +167,21 @@ raw_input()
 game.next_round()
 raw_input()
 game.next_round()
+
+
+forward_pass = mod.get_function("forward_pass")
+input = game._bot1.get_hand().flatten()
+
+input = input.astype(np.float32)
+W1 = W1.astype(np.float32)
+
+print(input.shape)
+print(W1.shape)
+
+input_gpu = cuda.mem_alloc(input.nbytes)
+cuda.memcpy_htod(input_gpu, input)
+
+W1_gpu = cuda.mem_alloc(W1.nbytes)
+cuda.memcpy_htod(W1_gpu, W1)
+
+forward_pass()
