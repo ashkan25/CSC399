@@ -38,12 +38,10 @@ mod = SourceModule("""
         }
         
         int index = col + row * width;
+
         atomicAdd(&denominator, expf(in[index]));
         
-        // TODO Check if sync is needed. It only syncs for individual blocks, but atomic should sync for all blocks
-        __syncthreads(); 
-        
-        out[index] = in[index] / denominator;
+        out[index] = expf(in[index]) / denominator;
         
     }
     
@@ -64,8 +62,7 @@ mod = SourceModule("""
         for (int i = 0; i < a_width; i++) {
             c_value += (a[row * a_width + i]) * (b[i * b_width + col]);
         }
-        if (col < 10)
-	        printf("I AM %f\\n", c_value);        
+
         c[row*c_width+col] = c_value;
 
         // TODO It might be better to export ReLU to another kernel since it is not needed for the final hidden layer
@@ -92,7 +89,7 @@ model = {
 
 
 # TODO Convert to CUDA
-def Softmax(x):
+def softmax_cpu(x):
     return np.exp(x) / np.exp(x).sum(axis=1, keepdims=True)
 
 
@@ -184,16 +181,15 @@ W1 = W1.astype(np.float32)
 print(input.shape)
 print(W1.shape)
 
-#a = np.random.rand(1, 52).astype(np.float32)
 input_gpu = cuda.mem_alloc(input.nbytes)
 cuda.memcpy_htod(input_gpu, input)
 
 W1_gpu = cuda.mem_alloc(W1.nbytes)
 cuda.memcpy_htod(W1_gpu, W1)
 
-output = np.zeros((1, 500)).astype(np.float32)
-output_gpu = cuda.mem_alloc(output.nbytes)
-cuda.memcpy_htod(output_gpu, output)
+y = np.zeros((1, 500)).astype(np.float32)
+y_gpu = cuda.mem_alloc(y.nbytes)
+cuda.memcpy_htod(y_gpu, y)
 
 
 block = (16, 16, 1);
@@ -202,11 +198,19 @@ grid = ((500 + 16 - 1) / 16,
 
 print(grid)
 
-forward_pass(input_gpu, W1_gpu, output_gpu, np.int32(52), np.int32(500), np.int32(500), block=block, grid=grid)
+forward_pass(input_gpu, W1_gpu, y_gpu, np.int32(52), np.int32(500), np.int32(500), block=block, grid=grid)
 
-#c_value = np.emptylike(output).astype(np.float32)
 
-cuda.memcpy_dtoh(output, output_gpu) 
-print(((output - np.dot(input,W1)) > 0.001).sum()) 
-print(output[0][:50])
-print(np.dot(input,W1)[:50])
+cuda.memcpy_dtoh(y, y_gpu) 
+print("Number of mistakes for matrix multiply: %d" % ((y - np.dot(input,W1)) > 0.001).sum()) 
+
+
+softmax = mod.get_function("softmax")
+prediction = np.zeros((1, 500)).astype(np.float32)
+prediction_gpu = cuda.mem_alloc(prediction.nbytes)
+cuda.memcpy_htod(prediction_gpu, prediction)
+
+softmax(np.int32(500), np.int32(1), y_gpu, prediction_gpu, block=block, grid=grid)
+
+cuda.memcpy_dtoh(prediction, prediction_gpu)
+print("Number of mistakes for softmax: %d" % (prediction - softmax_cpu(y)).sum())
