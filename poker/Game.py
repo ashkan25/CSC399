@@ -9,6 +9,8 @@ import numpy as np
 
 # TODO Make sure you handle when matrix is bigger than NUM_BLOCKS*NUM_THREADS
 mod = SourceModule("""
+#include <stdio.h>
+
 #define CUDA_KERNEL_LOOP(i, n) \
  for (int i = blockIdx.x * blockDim.x + threadIdx.x; i < (n); i += blockDim.x * gridDim.x)
 
@@ -31,7 +33,7 @@ mod = SourceModule("""
         int col = blockIdx.x * blockDim.x + threadIdx.x;
         int row = blockIdx.y * blockDim.y + threadIdx.y;
         
-        if (row > height || col > width) {
+        if (row >= height || col >= width) {
             return;
         }
         
@@ -53,18 +55,22 @@ mod = SourceModule("""
     
         int row = blockIdx.y * blockDim.y + threadIdx.y;
         int col = blockIdx.x * blockDim.x + threadIdx.x;
-        
-        if(row > a_width || col > b_width) {
+
+        // TODO pass in Height of matrix A. It is a vector, so it always should be 1
+        if(row >= 1 || col >= b_width) {
             return;
         }
-        
+
         for (int i = 0; i < a_width; i++) {
             c_value += (a[row * a_width + i]) * (b[i * b_width + col]);
         }
-        
-        // TODO It might be better to export ReLU to another kernel since it doesn't 
+        if (col < 10)
+	        printf("I AM %f\\n", c_value);        
+        c[row*c_width+col] = c_value;
+
+        // TODO It might be better to export ReLU to another kernel since it is not needed for the final hidden layer
         // ReLU function: max(x, 0)
-        c[row * c_width + col] = c_value > 0 ? c_value  : 0;
+        //c[row * c_width + col] = c_value > 0 ? c_value  : 0;
     
     }
 
@@ -178,10 +184,29 @@ W1 = W1.astype(np.float32)
 print(input.shape)
 print(W1.shape)
 
+#a = np.random.rand(1, 52).astype(np.float32)
 input_gpu = cuda.mem_alloc(input.nbytes)
 cuda.memcpy_htod(input_gpu, input)
 
 W1_gpu = cuda.mem_alloc(W1.nbytes)
 cuda.memcpy_htod(W1_gpu, W1)
 
-forward_pass()
+output = np.zeros((1, 500)).astype(np.float32)
+output_gpu = cuda.mem_alloc(output.nbytes)
+cuda.memcpy_htod(output_gpu, output)
+
+
+block = (16, 16, 1);
+grid = ((500 + 16 - 1) / 16,
+(1 + 16 - 1) / 16);
+
+print(grid)
+
+forward_pass(input_gpu, W1_gpu, output_gpu, np.int32(52), np.int32(500), np.int32(500), block=block, grid=grid)
+
+#c_value = np.emptylike(output).astype(np.float32)
+
+cuda.memcpy_dtoh(output, output_gpu) 
+print(((output - np.dot(input,W1)) > 0.001).sum()) 
+print(output[0][:50])
+print(np.dot(input,W1)[:50])
