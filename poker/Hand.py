@@ -32,6 +32,5 @@ class Hand:
     def __str__(self):
         return str(self._hand)
 
-
     def get_hand(self):
 	return self._hand
