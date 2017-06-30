@@ -104,62 +104,67 @@ def backward(eph, epdlogp):
 
 # ------------------------------------------------------------------
 game = Game.Game()
-game.new_game()
 
 num_inputs = np.int32(52)  # TODO CALCULATE INPUT COUNT
 num_outputs = np.int32(3)  # CALL/CHECK, RAISE, FOLD
 num_hiddens = [np.int32(500)]  # Each value represents number of nodes per layer
 
-W1 = 0.1 * np.random.randn(num_inputs, num_hiddens[0]).astype(np.float32)
-W2 = 0.1 * np.random.randn(num_hiddens[0], num_outputs).astype(np.float32)
+def forward_pass():
+    W1 = 0.1 * np.random.randn(num_inputs, num_hiddens[0]).astype(np.float32)
+    W2 = 0.1 * np.random.randn(num_hiddens[0], num_outputs).astype(np.float32)
 
-model = {
-    'W1': W1,
-    'W2': W2,
-}
+    forward_pass = mod.get_function("forward_pass")
+    softmax = mod.get_function("softmax")
+    input = game._bot1.get_hand().flatten().astype(np.float32)
 
-forward_pass = mod.get_function("forward_pass")
-softmax = mod.get_function("softmax")
-input = game._bot1.get_hand().flatten().astype(np.float32)
+    W1_out = np.zeros((1, num_hiddens[0])).astype(np.float32)
+    y = np.zeros((1, num_outputs)).astype(np.float32)
+    prediction = np.zeros((1, num_outputs)).astype(np.float32)
 
-W1_out = np.zeros((1, num_hiddens[0])).astype(np.float32)
-y = np.zeros((1, num_outputs)).astype(np.float32)
-prediction = np.zeros((1, num_outputs)).astype(np.float32)
+    input_gpu = cuda.mem_alloc(input.nbytes)
+    W1_gpu = cuda.mem_alloc(W1.nbytes)
+    W2_gpu = cuda.mem_alloc(W2.nbytes)
+    W1_out_gpu = cuda.mem_alloc(W1_out.nbytes)
+    y_gpu = cuda.mem_alloc(y.nbytes)
+    prediction_gpu = cuda.mem_alloc(prediction.nbytes)
 
-input_gpu = cuda.mem_alloc(input.nbytes)
-W1_gpu = cuda.mem_alloc(W1.nbytes)
-W2_gpu = cuda.mem_alloc(W2.nbytes)
-W1_out_gpu = cuda.mem_alloc(W1_out.nbytes)
-y_gpu = cuda.mem_alloc(y.nbytes)
-prediction_gpu = cuda.mem_alloc(prediction.nbytes)
-
-cuda.memcpy_htod(input_gpu, input)
-cuda.memcpy_htod(W1_gpu, W1)
-cuda.memcpy_htod(W2_gpu, W2)
-cuda.memcpy_htod(y_gpu, y)
-cuda.memcpy_htod(prediction_gpu, prediction)
+    cuda.memcpy_htod(input_gpu, input)
+    cuda.memcpy_htod(W1_gpu, W1)
+    cuda.memcpy_htod(W2_gpu, W2)
+    cuda.memcpy_htod(y_gpu, y)
+    cuda.memcpy_htod(prediction_gpu, prediction)
 
 
-block = (16, 16, 1)
-grid = ((500 + 16 - 1) / 16,
-        (1 + 16 - 1) / 16)
+    block = (16, 16, 1)
+    grid = ((500 + 16 - 1) / 16,
+            (1 + 16 - 1) / 16)
 
-print(grid)
-forward_pass(input_gpu, W1_gpu, W1_out_gpu, num_inputs, num_hiddens[0], num_hiddens[0], block=block, grid=grid)
-forward_pass(W1_out_gpu, W2_gpu, y_gpu, num_hiddens[0], num_outputs, num_outputs, block=block, grid=grid)
+    print(grid)
+    forward_pass(input_gpu, W1_gpu, W1_out_gpu, num_inputs, num_hiddens[0], num_hiddens[0], block=block, grid=grid)
+    forward_pass(W1_out_gpu, W2_gpu, y_gpu, num_hiddens[0], num_outputs, num_outputs, block=block, grid=grid)
 
 
-cuda.memcpy_dtoh(y, y_gpu)
-cuda.memcpy_dtoh(W1_out, W1_out_gpu)
+    cuda.memcpy_dtoh(y, y_gpu)
+    cuda.memcpy_dtoh(W1_out, W1_out_gpu)
 
-# DEBUG STATEMENT
-print("Number of mistakes for matrix multiply (Hidden): %d" % (np.abs(W1_out - np.dot(input, W1)) > 0.001).sum())
-print("Number of mistakes for matrix multiply (Output): %d" % (np.abs(y - np.dot(W1_out, W2)) > 0.001).sum())
+    # DEBUG STATEMENT
+    print("Number of mistakes for matrix multiply (Hidden): %d" % (np.abs(W1_out - np.dot(input, W1)) > 0.001).sum())
+    print("Number of mistakes for matrix multiply (Output): %d" % (np.abs(y - np.dot(W1_out, W2)) > 0.001).sum())
 
-softmax(num_outputs, np.int32(1), y_gpu, prediction_gpu, block=block, grid=grid)
+    softmax(num_outputs, np.int32(1), y_gpu, prediction_gpu, block=block, grid=grid)
 
-cuda.memcpy_dtoh(prediction, prediction_gpu)
+    cuda.memcpy_dtoh(prediction, prediction_gpu)
 
-# DEBUG STATEMENT
-print("Number of mistakes for softmax: %d" % (np.abs(prediction - softmax_cpu(y)) > 0.001).sum())
-print("Prediction probabilities: %s" % str(prediction))
+    # DEBUG STATEMENT
+    print("Number of mistakes for softmax: %d" % (np.abs(prediction - softmax_cpu(y)) > 0.001).sum())
+    print("Prediction probabilities: %s" % str(prediction))
+
+
+game.new_game()
+raw_input()
+game.next_round()
+raw_input()
+game.next_round()
+raw_input()
+game.next_round()
+
