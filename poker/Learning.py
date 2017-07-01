@@ -140,6 +140,9 @@ def forward():
     grid = ((500 + 16 - 1) / 16,
             (1 + 16 - 1) / 16)
 
+    print("BLOCK DIM: %s" % str(block))
+    print("GRID  DIM: %s" % str(grid))
+
     forward_pass(input_gpu, W1_gpu, W1_out_gpu, num_inputs, num_hiddens[0], num_hiddens[0], block=block, grid=grid)
     forward_pass(W1_out_gpu, W2_gpu, y_gpu, num_hiddens[0], num_outputs, num_outputs, block=block, grid=grid)
 
