@@ -106,7 +106,7 @@ def backward(eph, epdlogp):
 def pick_action(action_prob):
     r = np.random.uniform()
     total = 0
-    for i, p in enumerate(action_prob):
+    for i, p in enumerate(action_prob[0]):
         total += p
         if r <= total:
             return i
@@ -223,3 +223,4 @@ for _ in range(NUM_EPISODES):
     reward = game.evaluate_winner(game.get_p1_hand(), game.get_p2_hand())
 
     rewards.append(reward) # +1 / -1 depending on who wins. 0 for tie
+    rewards = discount_rewards(rewards)
