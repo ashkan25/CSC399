@@ -16,10 +16,10 @@ class Game:
         f.close()
 
     def new_game(self):
-	self._bot1 = Hand.Hand()
-	self._bot2 = Hand.Hand()
-	self._deck = Deck.Deck()
-	self._round = 0
+        self._bot1 = Hand.Hand()
+        self._bot2 = Hand.Hand()
+        self._deck = Deck.Deck()
+        self._round = 0
 
         # PREFLOP
         self._bot1.add_card(self._deck.draw(2))
