@@ -98,9 +98,9 @@ def softmax_cpu(x):
 
 
 # TODO backward pass. DO IN CUDA
-def backward_policy(eph, epdlogp):
-    """ backward pass. (eph is array of intermediate hidden states) """
+def backward_policy(eph, epdlogp, epx):
     dW2 = eph.T.dot(epdlogp)
+
     dh = epdlogp.dot(model['W2'].T)
     dh[eph <= 0] = 0  # backpro prelu
 
@@ -123,7 +123,7 @@ def pick_action(action_prob):
 # Compute discount rewards. Give more recent rewards more weight.
 # TODO Check if it's possible to change function to work on GPU. Probably not, each value depends on the previous
 def discount_rewards(rewards, discount_factor=0.98):
-    discounted_r = np.zeros_like(rewards)
+    discounted_r = np.zeros_like(rewards).astype(np.float32)
     running_add = 0
     for i in reversed(xrange(0, len(rewards))):
 
@@ -215,7 +215,7 @@ def forward():
 
 
 def next_round():
-    raw_input()
+    #raw_input()
     game.next_round()
     forward()
 
@@ -240,7 +240,7 @@ for i in range(NUM_EPISODES):
         dlogps.append(dlogsoftmax)
 
         # Observation/input
-        xs.append(game.get_p1_hand())
+        xs.append(game._bot1.get_hand().flatten().astype(np.float32))
 
     action_prob, h = forward()
     action = pick_action(action_prob)
@@ -251,12 +251,20 @@ for i in range(NUM_EPISODES):
     rewards.append(reward)  # +1 / -1 depending on who wins. 0 for tie
     hs.append(h)
 
-    rewards = discount_rewards(rewards)
+    # Softmax loss gradient
+    dlogsoftmax = action_prob
+    dlogsoftmax[0, action] -= 1
+    dlogps.append(dlogsoftmax)
 
+    # Observation/input
+    xs.append(game._bot1.get_hand().flatten().astype(np.float32))
+
+
+    rewards = discount_rewards(rewards)
     # standardize the rewards
     # Only 10 rewards, not worth it to do on GPU.
-    rewards -= np.mean(rewards)
-    rewards /= np.std(rewards)
+    rewards -= np.mean(rewards).astype(np.float32)
+    rewards /= np.std(rewards).astype(np.float32)
 
     # Cannot be done on GPU, order must be preserved
     epx = np.vstack(xs)
@@ -264,7 +272,7 @@ for i in range(NUM_EPISODES):
     epdlogp = np.vstack(dlogps)
     epr = np.vstack(rewards)
 
-    grad = backward(eph, epdlogp)
+    grad = backward_policy(eph, epdlogp, epx)
 
     # TODO Check if it is worth it to do operation in parallel. 2 Matrices is 500x4, approx 40x40 matrix.
     for k in model:

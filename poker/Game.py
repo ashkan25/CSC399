@@ -25,9 +25,9 @@ class Game:
         self._bot1.add_card(self._deck.draw(2))
         self._bot2.add_card(self._deck.draw(2))
 
-        print(Constants.ROUNDS[self._round])
-        print(self._bot1)
-        print(self._bot2)
+#        print(Constants.ROUNDS[self._round])
+#        print(self._bot1)
+#        print(self._bot2)
         self._round += 1
 
     def next_round(self):
@@ -39,8 +39,8 @@ class Game:
         self._bot1.add_card(flop_cards)
         self._bot2.add_card(flop_cards)
         print(Constants.ROUNDS[self._round])
-        print(self._bot1)
-        print(self._bot2)
+#        print(self._bot1)
+#        print(self._bot2)
         self._round += 1
 
     def hand_strength(self, h):
