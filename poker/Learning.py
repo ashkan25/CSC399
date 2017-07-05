@@ -140,7 +140,7 @@ game = Game.Game()
 num_inputs = np.int32(52)  # TODO CALCULATE INPUT COUNT
 num_outputs = np.int32(3)  # CALL/CHECK, RAISE, FOLD
 num_hiddens = [np.int32(500)]  # Each value represents number of nodes per layer
-NUM_EPISODES = 1000
+NUM_EPISODES = 50000
 LEARNING_RATE = 1e-3
 GAMMA = 0.99  # discount factor for reward
 DECAY_RATE = 0.99  # decay factor for RMSProp leaky sum of grad^2
@@ -241,27 +241,27 @@ def update_learning_params(xs, hs, dlogps, rewards, action_raise=False):
     return action
 
 
-# Allow only one Raise per state
+# Allow only one Raise per state. Return True if action for either player was FOLD
 def handle_action(action, rewards, bot_can_raise=True):
     bot2_action = game.bot_decision(bot_can_raise)
 
     if Constants.ACTIONS[action] == "FOLD":
         rewards.append(-1)
-	return 2
+	return True
     elif Constants.ACTIONS[action] == "RAISE":
         action = update_learning_params(xs, hs, dlogps, rewards, action_raise=True)
         return handle_action(action, rewards, bot_can_raise=False)
 
     if Constants.ACTIONS[bot2_action] == "FOLD":
         rewards.append(1)
-	return 2
+	return True
     elif Constants.ACTIONS[bot2_action] == "RAISE":
         action = update_learning_params(xs, hs, dlogps, rewards, action_raise=True)
         return handle_action(action, rewards, bot_can_raise=False)
 
     # Otherwise, both players have checked
     rewards.append(0)
-    return 0
+    return False
 
 for i in range(NUM_EPISODES):
     game.new_game()
@@ -281,29 +281,25 @@ for i in range(NUM_EPISODES):
 
     if not is_fold:
         action = update_learning_params(xs, hs, dlogps, rewards)
-        handle_action(action, rewards)
+        is_fold = handle_action(action, rewards)
   
+    if not is_fold:
         # EVALUATE WINNER
         reward = game.evaluate_winner(game.get_p1_hand(), game.get_p2_hand())
         rewards.append(reward)  # +1 / -1 depending on who wins. 0 for tie
 
 
+
     rewards = discount_rewards(rewards)
-
-
-    if i == 10:
-        break
-
-    print(rewards)
-
-
+    #print(rewards)
+    reward_count.append(rewards[-1]) 
 
 
     # standardize the rewards
     # (Special Case) Don't standardize if someone folds at the start (preflop)
-#    if len(rewards) != 1:
-#        rewards -= np.mean(rewards).astype(np.float32)
-#        rewards /= np.std(rewards).astype(np.float32)
+    if len(rewards) != 1:
+        rewards -= np.mean(rewards).astype(np.float32)
+        rewards /= np.std(rewards).astype(np.float32)
 
     # Cannot be done on GPU, order must be preserved
     epx = np.vstack(xs)
@@ -331,10 +327,11 @@ for i in range(NUM_EPISODES):
             # Reset grad buffer
             grad_buffer[k] = np.zeros_like(v)
 
-    reward_count.append(rewards[-1]) 
-
+    if i%100 == 0:
+	print(rewards)
 
 x = np.array(reward_count)
 unique, counts = np.unique(x, return_counts=True)
 
 print np.asarray((unique, counts)).T
+
