@@ -14,16 +14,20 @@ mod = SourceModule("""
 #define CUDA_KERNEL_LOOP(i, n) \
  for (int i = blockIdx.x * blockDim.x + threadIdx.x; i < (n); i += blockDim.x * gridDim.x)
 
-    __global__ void relu(const int width, const int height, const float* in, float* out) {
+    __global__ void relu(const int width, const int height, float* a) {
 
         int row = blockIdx.y * blockDim.y + threadIdx.y;
         int col = blockIdx.x * blockDim.x + threadIdx.x;
 
-        if(row > height || col > width) {
+        if(row >= height || col >= width) {
             return;
         }
 
-        out[row * width + col] = in[row * width + col] > 0 ? in[row * width + col] : 0;
+        int index = col + row * width;
+
+        if (a[index] < 0) {
+            a[index] = 0;
+        }
     }
 
 
@@ -45,6 +49,7 @@ mod = SourceModule("""
 
     }
 
+    // TODO optimize using shared memory
     // https://www.shodor.org/media/content/petascale/materials/UPModules/matrixMultiplication/moduleDocument.pdf
     __global__ void forward_pass(const float* a, const float* b, float* c,
                                 const int a_width, const int b_width, const int c_width) {
@@ -113,6 +118,7 @@ def backward_policy(eph, epdlogp, epx):
 def pick_action(action_prob):
     r = np.random.uniform()
     total = 0
+    print(action_prob)
     for i, p in enumerate(action_prob[0]):
         total += p
         if r <= total:
@@ -154,12 +160,17 @@ rmsprop_cache = {k: np.zeros_like(v) for k, v in model.iteritems()}
 
 
 def forward():
+
+    input = np.array([1,2,3,4]).flatten().astype(np.float32)
+
     forward_pass = mod.get_function("forward_pass")
     softmax = mod.get_function("softmax")
-    input = game._bot1.get_hand().flatten().astype(np.float32)
+    relu = mod.get_function("relu")
+
     #print('---')
     #print(input)
     #print('---')
+
     W1_out = np.zeros((1, num_hiddens[0])).astype(np.float32)
     y = np.zeros((1, num_outputs)).astype(np.float32)
     predictions = np.zeros((1, num_outputs)).astype(np.float32)
@@ -185,16 +196,27 @@ def forward():
     # print("GRID  DIM: %s" % str(grid))
 
     forward_pass(input_gpu, W1_gpu, W1_out_gpu, num_inputs, num_hiddens[0], num_hiddens[0], block=block, grid=grid)
-    forward_pass(W1_out_gpu, W2_gpu, y_gpu, num_hiddens[0], num_outputs, num_outputs, block=block, grid=grid)
 
-    # TODO remove if y is not used
-    cuda.memcpy_dtoh(y, y_gpu)
+    # DEBUG
+    #debug_answer = np.dot(input, model['W1'])
+    #cuda.memcpy_dtoh(W1_out, W1_out_gpu) # TODO REMOVE IF NOT DEBUG
+    #print("Number of mistakes for matrix multiply (Hidden 1): %d" % (np.abs(W1_out - debug_answer) > 0.001).sum())
+
+    relu(num_hiddens[0], np.int32(1), W1_out_gpu, block=block, grid=grid)
 
     cuda.memcpy_dtoh(W1_out, W1_out_gpu)
 
-    # DEBUG STATEMENT
-    # print("Number of mistakes for matrix multiply (Hidden): %d" % (np.abs(W1_out - np.dot(input, W1)) > 0.001).sum())
-    # print("Number of mistakes for matrix multiply (Output): %d" % (np.abs(y - np.dot(W1_out, W2)) > 0.001).sum())
+    # DEBUG
+    #debug_answer[debug_answer < 0] = 0 # RELU
+    #print("Number of mistakes for RELU (Hidden 1): %d" % (np.abs(W1_out - debug_answer) > 0.001).sum())
+
+    forward_pass(W1_out_gpu, W2_gpu, y_gpu, num_hiddens[0], num_outputs, num_outputs, block=block, grid=grid)
+
+    # DEBUG
+    #cuda.memcpy_dtoh(y, y_gpu)
+    #debug_answer = np.dot(debug_answer, model['W2'])
+    #print("Number of mistakes for matrix multiply (Output): %d" % (np.abs(y - debug_answer) > 0.001).sum())
+
 
     # Work around for denominator that needs to be reset for each round
     denom = np.array([0]).astype(np.float32)
@@ -206,7 +228,7 @@ def forward():
     cuda.memcpy_dtoh(predictions, predictions_gpu)
 
     # DEBUG STATEMENT
-    # print("Number of mistakes for softmax: %d" % (np.abs(prediction - softmax_cpu(y)) > 0.001).sum())
+    #print("Number of mistakes for softmax: %d" % (np.abs(predictions - softmax_cpu(y)) > 0.001).sum())
     #print("Prediction probabilities: %s" % str(predictions))
 
     return predictions, W1_out
@@ -222,6 +244,7 @@ def update_learning_params(xs, hs, dlogps, rewards, action_raise=False):
     action_prob, h = forward()
 
     action = pick_action(action_prob)
+
     # actions.append(action)
 
     # Raise only once. If the chosen action is to raise again, check instead.
@@ -250,6 +273,7 @@ def handle_action(action, rewards, bot_can_raise=True):
 	return True
     elif Constants.ACTIONS[action] == "RAISE":
         action = update_learning_params(xs, hs, dlogps, rewards, action_raise=True)
+	rewards.append(0)
         return handle_action(action, rewards, bot_can_raise=False)
 
     if Constants.ACTIONS[bot2_action] == "FOLD":
@@ -257,6 +281,7 @@ def handle_action(action, rewards, bot_can_raise=True):
 	return True
     elif Constants.ACTIONS[bot2_action] == "RAISE":
         action = update_learning_params(xs, hs, dlogps, rewards, action_raise=True)
+	rewards.append(0)
         return handle_action(action, rewards, bot_can_raise=False)
 
     # Otherwise, both players have checked
@@ -297,9 +322,9 @@ for i in range(NUM_EPISODES):
 
     # standardize the rewards
     # (Special Case) Don't standardize if someone folds at the start (preflop)
-    if len(rewards) != 1:
-        rewards -= np.mean(rewards).astype(np.float32)
-        rewards /= np.std(rewards).astype(np.float32)
+#    if len(rewards) != 1:
+#        rewards -= np.mean(rewards).astype(np.float32)
+#        rewards /= np.std(rewards).astype(np.float32)
 
     # Cannot be done on GPU, order must be preserved
     epx = np.vstack(xs)
@@ -327,7 +352,7 @@ for i in range(NUM_EPISODES):
             # Reset grad buffer
             grad_buffer[k] = np.zeros_like(v)
 
-    if i%100 == 0:
+    if i%10 == 0:
 	print(rewards)
 
 x = np.array(reward_count)
