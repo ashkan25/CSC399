@@ -11,6 +11,8 @@ class Game:
         self._deck = Deck.Deck()
         self._round = 0
 
+        self._bot_cumsum_prob = np.cumsum(Constants.BOT_ACTION_PROBS)
+
         f = open("HandRanks.dat", "rb")
         self._lookup_table = np.fromfile(f, dtype=np.int32)
         f.close()
@@ -72,6 +74,20 @@ class Game:
 
     def get_p2_hand(self):
         return self._bot2.get_lookup_table_hand()
+
+    def bot_decision(self, can_raise=True):
+
+        # Remove raise as an option if bot cannot raise (Case when someone already raised)
+        if can_raise:
+            probs = self._bot_cumsum_prob
+        else:
+            probs = self._bot_cumsum_prob[:]
+            probs[0] = probs.pop(1)
+
+        r = np.random.uniform()
+        for i, v in enumerate(probs):
+            if r < v:
+                return i
 
 # lookup_table = array.array('i')
 # f = open("HandRanks.dat", "rb")

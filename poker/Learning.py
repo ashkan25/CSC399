@@ -109,7 +109,6 @@ def backward_policy(eph, epdlogp, epx):
     return {'W1': dW1, 'W2': dW2}
 
 
-
 # Pick highest probability action, with a certain probability of picking a different choice
 def pick_action(action_prob):
     r = np.random.uniform()
@@ -118,7 +117,6 @@ def pick_action(action_prob):
         total += p
         if r <= total:
             return i
-
 
 # Compute discount rewards. Give more recent rewards more weight.
 # TODO Check if it's possible to change function to work on GPU. Probably not, each value depends on the previous
@@ -220,38 +218,19 @@ def next_round():
     forward()
 
 
-for i in range(NUM_EPISODES):
-    game.new_game()
-
-    xs, hs, dlogps, rewards = [], [], [], []
-
-    for _ in range(3):
-        action_prob, h = forward()
-        action = pick_action(action_prob)
-        actions.append(action)
-        next_round()
-        # No rewards for first 3 phases
-        rewards.append(0)
-        hs.append(h)
-
-        # softmax loss gradient
-        dlogsoftmax = action_prob
-        dlogsoftmax[0, action] -= 1
-        dlogps.append(dlogsoftmax)
-
-        # Observation/input
-        xs.append(game._bot1.get_hand().flatten().astype(np.float32))
-
+def update_learning_params(xs, hs, dlogps, rewards, action_raise=False):
     action_prob, h = forward()
+
     action = pick_action(action_prob)
-    actions.append(action)
+    # actions.append(action)
 
-    reward = game.evaluate_winner(game.get_p1_hand(), game.get_p2_hand())
+    # Raise only once. If the chosen action is to raise again, check instead.
+    if Constants.ACTIONS[action] == "RAISE" and action_raise:
+        action = 0
 
-    rewards.append(reward)  # +1 / -1 depending on who wins. 0 for tie
     hs.append(h)
 
-    # Softmax loss gradient
+    # softmax loss gradient
     dlogsoftmax = action_prob
     dlogsoftmax[0, action] -= 1
     dlogps.append(dlogsoftmax)
@@ -259,12 +238,59 @@ for i in range(NUM_EPISODES):
     # Observation/input
     xs.append(game._bot1.get_hand().flatten().astype(np.float32))
 
+    return action
+
+
+# Allow only one Raise per state
+def handle_action(action, rewards, bot_can_raise=True):
+    bot2_action = game.bot_decision(bot_can_raise)
+
+    if Constants.ACTIONS[action] == "FOLD":
+        rewards.append(-1)
+    elif Constants.ACTIONS[action] == "RAISE":
+        action = update_learning_params(xs, hs, dlogps, rewards, action_raise=True)
+        return handle_action(action, rewards, bot_can_raise=False)
+
+    if Constants.ACTIONS[bot2_action] == "FOLD":
+        rewards.append(1)
+    elif Constants.ACTIONS[bot2_action] == "RAISE":
+        action = update_learning_params(xs, hs, dlogps, rewards, action_raise=True)
+        return handle_action(action, rewards, bot_can_raise=False)
+
+    # Otherwise, both players have checked
+    rewards.append(0)
+
+
+for i in range(NUM_EPISODES):
+    game.new_game()
+
+    xs, hs, dlogps, rewards = [], [], [], []
+
+    for _ in range(3):
+
+        action = update_learning_params(xs, hs, dlogps, rewards)
+        handle_action(action, rewards)
+        next_round()
+
+    action = update_learning_params(xs, hs, dlogps, rewards)
+    handle_action(action, rewards)
+
+    # EVALUATE WINNER
+    reward = game.evaluate_winner(game.get_p1_hand(), game.get_p2_hand())
+
+    rewards.append(reward)  # +1 / -1 depending on who wins. 0 for tie
+
+
+    # Observation/input
+    xs.append(game._bot1.get_hand().flatten().astype(np.float32))
 
     rewards = discount_rewards(rewards)
+
     # standardize the rewards
-    # Only 10 rewards, not worth it to do on GPU.
-    rewards -= np.mean(rewards).astype(np.float32)
-    rewards /= np.std(rewards).astype(np.float32)
+    # (Special Case) Don't standardize if someone folds at the start (preflop)
+    if len(rewards) != 1:
+        rewards -= np.mean(rewards).astype(np.float32)
+        rewards /= np.std(rewards).astype(np.float32)
 
     # Cannot be done on GPU, order must be preserved
     epx = np.vstack(xs)
@@ -274,7 +300,7 @@ for i in range(NUM_EPISODES):
 
     grad = backward_policy(eph, epdlogp, epx)
 
-    # TODO Check if it is worth it to do operation in parallel. 2 Matrices is 500x4, approx 40x40 matrix.
+    # TODO Check if it is worth it to do operation in parallel. 2 Matrices is 500x4, approx 40x40 matrix. Input size will get larger in the future
     for k in model:
         # accumulate grad over batch
         grad_buffer[k] += grad[k]
@@ -282,7 +308,13 @@ for i in range(NUM_EPISODES):
     if i % 10 == 0:
         for k, v in model.iteritems():
             g = grad_buffer[k]  # gradient
+
+            # RMSprop: Gradient descent optimization algorithms
             rmsprop_cache[k] = DECAY_RATE * rmsprop_cache[k] + (1 - DECAY_RATE) * g ** 2
+
+            # Update weights to minimize the error
             model[k] -= LEARNING_RATE * g / (np.sqrt(rmsprop_cache[k]) + 1e-5)
+
+            # Reset grad buffer
             grad_buffer[k] = np.zeros_like(v)
 
