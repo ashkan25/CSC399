@@ -145,7 +145,7 @@ LEARNING_RATE = 1e-3
 GAMMA = 0.99  # discount factor for reward
 DECAY_RATE = 0.99  # decay factor for RMSProp leaky sum of grad^2
 actions = []
-rewards = []
+reward_count = []
 model = {}
 model['W1'] = 0.1 * np.random.randn(num_inputs, num_hiddens[0]).astype(np.float32)
 model['W2'] = 0.1 * np.random.randn(num_hiddens[0], num_outputs).astype(np.float32)
@@ -157,9 +157,9 @@ def forward():
     forward_pass = mod.get_function("forward_pass")
     softmax = mod.get_function("softmax")
     input = game._bot1.get_hand().flatten().astype(np.float32)
-    print('---')
-    print(input)
-    print('---')
+    #print('---')
+    #print(input)
+    #print('---')
     W1_out = np.zeros((1, num_hiddens[0])).astype(np.float32)
     y = np.zeros((1, num_outputs)).astype(np.float32)
     predictions = np.zeros((1, num_outputs)).astype(np.float32)
@@ -207,7 +207,7 @@ def forward():
 
     # DEBUG STATEMENT
     # print("Number of mistakes for softmax: %d" % (np.abs(prediction - softmax_cpu(y)) > 0.001).sum())
-    print("Prediction probabilities: %s" % str(predictions))
+    #print("Prediction probabilities: %s" % str(predictions))
 
     return predictions, W1_out
 
@@ -215,7 +215,7 @@ def forward():
 def next_round():
     #raw_input()
     game.next_round()
-    forward()
+    #forward()
 
 
 def update_learning_params(xs, hs, dlogps, rewards, action_raise=False):
@@ -247,19 +247,21 @@ def handle_action(action, rewards, bot_can_raise=True):
 
     if Constants.ACTIONS[action] == "FOLD":
         rewards.append(-1)
+	return 2
     elif Constants.ACTIONS[action] == "RAISE":
         action = update_learning_params(xs, hs, dlogps, rewards, action_raise=True)
         return handle_action(action, rewards, bot_can_raise=False)
 
     if Constants.ACTIONS[bot2_action] == "FOLD":
         rewards.append(1)
+	return 2
     elif Constants.ACTIONS[bot2_action] == "RAISE":
         action = update_learning_params(xs, hs, dlogps, rewards, action_raise=True)
         return handle_action(action, rewards, bot_can_raise=False)
 
     # Otherwise, both players have checked
     rewards.append(0)
-
+    return 0
 
 for i in range(NUM_EPISODES):
     game.new_game()
@@ -269,28 +271,39 @@ for i in range(NUM_EPISODES):
     for _ in range(3):
 
         action = update_learning_params(xs, hs, dlogps, rewards)
-        handle_action(action, rewards)
+        is_fold = handle_action(action, rewards)
+
+        if is_fold:
+            break
+
         next_round()
 
-    action = update_learning_params(xs, hs, dlogps, rewards)
-    handle_action(action, rewards)
 
-    # EVALUATE WINNER
-    reward = game.evaluate_winner(game.get_p1_hand(), game.get_p2_hand())
+    if not is_fold:
+        action = update_learning_params(xs, hs, dlogps, rewards)
+        handle_action(action, rewards)
+  
+        # EVALUATE WINNER
+        reward = game.evaluate_winner(game.get_p1_hand(), game.get_p2_hand())
+        rewards.append(reward)  # +1 / -1 depending on who wins. 0 for tie
 
-    rewards.append(reward)  # +1 / -1 depending on who wins. 0 for tie
-
-
-    # Observation/input
-    xs.append(game._bot1.get_hand().flatten().astype(np.float32))
 
     rewards = discount_rewards(rewards)
 
+
+    if i == 10:
+        break
+
+    print(rewards)
+
+
+
+
     # standardize the rewards
     # (Special Case) Don't standardize if someone folds at the start (preflop)
-    if len(rewards) != 1:
-        rewards -= np.mean(rewards).astype(np.float32)
-        rewards /= np.std(rewards).astype(np.float32)
+#    if len(rewards) != 1:
+#        rewards -= np.mean(rewards).astype(np.float32)
+#        rewards /= np.std(rewards).astype(np.float32)
 
     # Cannot be done on GPU, order must be preserved
     epx = np.vstack(xs)
@@ -318,3 +331,10 @@ for i in range(NUM_EPISODES):
             # Reset grad buffer
             grad_buffer[k] = np.zeros_like(v)
 
+    reward_count.append(rewards[-1]) 
+
+
+x = np.array(reward_count)
+unique, counts = np.unique(x, return_counts=True)
+
+print np.asarray((unique, counts)).T

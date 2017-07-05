@@ -11,7 +11,7 @@ class Game:
         self._deck = Deck.Deck()
         self._round = 0
 
-        self._bot_cumsum_prob = np.cumsum(Constants.BOT_ACTION_PROBS)
+        self._bot_cumsum_prob = list(np.cumsum(Constants.BOT_ACTION_PROBS))
 
         f = open("HandRanks.dat", "rb")
         self._lookup_table = np.fromfile(f, dtype=np.int32)
@@ -40,7 +40,7 @@ class Game:
 
         self._bot1.add_card(flop_cards)
         self._bot2.add_card(flop_cards)
-        print(Constants.ROUNDS[self._round])
+        #print(Constants.ROUNDS[self._round])
 #        print(self._bot1)
 #        print(self._bot2)
         self._round += 1
@@ -59,8 +59,8 @@ class Game:
         p1 = self.hand_strength(h1)
         p2 = self.hand_strength(h2)
 
-        print("P1 HAND STRENGTH: %d" % p1)
-        print("P2 HAND STRENGTH: %d" % p2)
+        #print("P1 HAND STRENGTH: %d" % p1)
+        #print("P2 HAND STRENGTH: %d" % p2)
 
         if p1 > p2:
             return 1
