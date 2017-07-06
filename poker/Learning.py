@@ -332,6 +332,8 @@ for i in range(NUM_EPISODES):
     epdlogp = np.vstack(dlogps)
     epr = np.vstack(rewards)
 
+    epdlogp *= discounted_epr
+    
     grad = backward_policy(eph, epdlogp, epx)
 
     # TODO Check if it is worth it to do operation in parallel. 2 Matrices is 500x4, approx 40x40 matrix. Input size will get larger in the future
