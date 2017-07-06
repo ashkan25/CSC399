@@ -146,7 +146,7 @@ game = Game.Game()
 num_inputs = np.int32(52)  # TODO CALCULATE INPUT COUNT
 num_outputs = np.int32(3)  # CALL/CHECK, RAISE, FOLD
 num_hiddens = [np.int32(500)]  # Each value represents number of nodes per layer
-NUM_EPISODES = 50000
+NUM_EPISODES = 10000
 LEARNING_RATE = 1e-3
 GAMMA = 0.99  # discount factor for reward
 DECAY_RATE = 0.99  # decay factor for RMSProp leaky sum of grad^2
@@ -166,6 +166,7 @@ def forward():
     forward_pass = mod.get_function("forward_pass")
     softmax = mod.get_function("softmax")
     relu = mod.get_function("relu")
+
 
     #print('---')
     #print(input)
@@ -309,6 +310,9 @@ for i in range(NUM_EPISODES):
         is_fold = handle_action(action, rewards)
   
     if not is_fold:
+
+	# Remove the last reward. The length of rewards must be equal to the number of actions
+	rewards.pop()
         # EVALUATE WINNER
         reward = game.evaluate_winner(game.get_p1_hand(), game.get_p2_hand())
         rewards.append(reward)  # +1 / -1 depending on who wins. 0 for tie
@@ -331,8 +335,7 @@ for i in range(NUM_EPISODES):
     eph = np.vstack(hs)
     epdlogp = np.vstack(dlogps)
     epr = np.vstack(rewards)
-
-    epdlogp *= discounted_epr
+    epdlogp *= epr
     
     grad = backward_policy(eph, epdlogp, epx)
 
