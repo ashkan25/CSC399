@@ -162,7 +162,14 @@ rmsprop_cache = {k: np.zeros_like(v) for k, v in model.iteritems()}
 
 def forward():
     # input = np.array([1, 2, 3, 4]).flatten().astype(np.float32)
-    input = game._bot1.get_hand()
+
+    #input = game._bot1.get_hand().flatten().astype(np.float32)
+    hand_input = game._bot1.get_hand()
+    round_input = game.get_round_input()
+    input = np.append(hand_input, round_input)
+    print(input)
+    print(input.shape)
+
 
     forward_pass = mod.get_function("forward_pass")
     softmax = mod.get_function("softmax")
@@ -260,7 +267,7 @@ def update_learning_params(xs, hs, dlogps, rewards, action_raise=False):
     dlogps.append(dlogsoftmax)
 
     # Observation/input
-    # xs.append(game._bot1.get_hand().flatten().astype(np.float32))
+    #xs.append(game._bot1.get_hand().flatten().astype(np.float32))
     xs.append(game._bot1.get_hand())
 
     return action

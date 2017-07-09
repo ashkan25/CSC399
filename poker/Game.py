@@ -11,6 +11,9 @@ class Game:
         self._deck = Deck.Deck()
         self._round = 0
 
+        # TODO Combine round input with hand input to avoid combining every round
+        self._round_input = np.zeros(52)
+
         self._bot_cumsum_prob = list(np.cumsum(Constants.BOT_ACTION_PROBS))
 
         f = open("HandRanks.dat", "rb")
@@ -22,17 +25,17 @@ class Game:
         self._bot2 = Hand.Hand()
         self._deck = Deck.Deck()
         self._round = 0
+        self._round_input = np.zeros(52)
 
         # PREFLOP
         self._bot1.add_card(self._deck.draw(2))
         self._bot2.add_card(self._deck.draw(2))
 
-#        print(Constants.ROUNDS[self._round])
-#        print(self._bot1)
-#        print(self._bot2)
+        self.round_input_update()
         self._round += 1
 
     def next_round(self):
+
         if self._round == Constants.FLOP:
             flop_cards = self._deck.draw(3)
         else:
@@ -40,10 +43,18 @@ class Game:
 
         self._bot1.add_card(flop_cards)
         self._bot2.add_card(flop_cards)
-        #print(Constants.ROUNDS[self._round])
-#        print(self._bot1)
-#        print(self._bot2)
+        self.round_input_update()
         self._round += 1
+
+    def round_input_update(self):
+        for i in range(Constants.NUM_OF_ROUNDS):
+            self._round_input[self._round*3 + i*Constants.NUM_OF_VALUES] = 1
+            self._round_input[self._round*3 + 1 + i*Constants.NUM_OF_VALUES] = 1
+            self._round_input[self._round*3 + 2 + i*Constants.NUM_OF_VALUES] = 1
+
+    def get_round_input(self):
+        return self._round_input
+
 
     def hand_strength(self, h):
 
