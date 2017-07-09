@@ -19,17 +19,20 @@ import numpy as np
 class Hand:
     def __init__(self):
         # TODO Change hand representation to 1D array of size 52 to remove the need to flatten array every time
-        self._hand = np.zeros((Constants.NUM_OF_SUITES, Constants.NUM_OF_VALUES))
+        # self._hand = np.zeros((Constants.NUM_OF_SUITES, Constants.NUM_OF_VALUES))
+        self._hand = np.zeros(Constants.NUM_OF_VALUES*Constants.NUM_OF_SUITES, dtype=np.int32)
         self._hand_lt_format = []
 
     def reset_hand(self):
         # TODO DO ON GPU
-        self._hand = np.zeros((Constants.NUM_OF_SUITES, Constants.NUM_OF_VALUES))
+        # self._hand = np.zeros((Constants.NUM_OF_SUITES, Constants.NUM_OF_VALUES))
+        self._hand = np.zeros(Constants.NUM_OF_VALUES*Constants.NUM_OF_SUITES, dtype=np.int32)
         self._hand_lt_format = []
 
     def add_card(self, cards):
         for card in cards:
-            self._hand[card[0]][card[1]] = 1
+            # self._hand[card[0]][card[1]] = 1
+            self._hand[card[0]*Constants.NUM_OF_VALUES + card[1]] = 1
             self._hand_lt_format.append((card[0] + 1) + (card[1] * 4))
 
     def __str__(self):

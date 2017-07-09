@@ -124,6 +124,7 @@ def pick_action(action_prob):
         if r <= total:
             return i
 
+
 # Compute discount rewards. Give more recent rewards more weight.
 # TODO Check if it's possible to change function to work on GPU. Probably not, each value depends on the previous
 def discount_rewards(rewards, discount_factor=0.98):
@@ -143,7 +144,7 @@ def discount_rewards(rewards, discount_factor=0.98):
 # ------------------------------------------------------------------
 game = Game.Game()
 
-num_inputs = np.int32(52)  # TODO CALCULATE INPUT COUNT
+num_inputs = np.int32(52)  # TODO CALCULATE INPUT COUNT (Make 52x3, 52 for bets, 52 for round, 52 for hand)
 num_outputs = np.int32(3)  # CALL/CHECK, RAISE, FOLD
 num_hiddens = [np.int32(500)]  # Each value represents number of nodes per layer
 NUM_EPISODES = 10000
@@ -160,17 +161,16 @@ rmsprop_cache = {k: np.zeros_like(v) for k, v in model.iteritems()}
 
 
 def forward():
-
-    input = np.array([1,2,3,4]).flatten().astype(np.float32)
+    # input = np.array([1, 2, 3, 4]).flatten().astype(np.float32)
+    input = game._bot1.get_hand()
 
     forward_pass = mod.get_function("forward_pass")
     softmax = mod.get_function("softmax")
     relu = mod.get_function("relu")
 
-
-    #print('---')
-    #print(input)
-    #print('---')
+    # print('---')
+    # print(input)
+    # print('---')
 
     W1_out = np.zeros((1, num_hiddens[0])).astype(np.float32)
     y = np.zeros((1, num_outputs)).astype(np.float32)
@@ -199,24 +199,24 @@ def forward():
     forward_pass(input_gpu, W1_gpu, W1_out_gpu, num_inputs, num_hiddens[0], num_hiddens[0], block=block, grid=grid)
 
     # DEBUG
-    #debug_answer = np.dot(input, model['W1'])
-    #cuda.memcpy_dtoh(W1_out, W1_out_gpu) # TODO REMOVE IF NOT DEBUG
-    #print("Number of mistakes for matrix multiply (Hidden 1): %d" % (np.abs(W1_out - debug_answer) > 0.001).sum())
+    # debug_answer = np.dot(input, model['W1'])
+    # cuda.memcpy_dtoh(W1_out, W1_out_gpu) # TODO REMOVE IF NOT DEBUG
+    # print("Number of mistakes for matrix multiply (Hidden 1): %d" % (np.abs(W1_out - debug_answer) > 0.001).sum())
 
     relu(num_hiddens[0], np.int32(1), W1_out_gpu, block=block, grid=grid)
 
     cuda.memcpy_dtoh(W1_out, W1_out_gpu)
 
     # DEBUG
-    #debug_answer[debug_answer < 0] = 0 # RELU
-    #print("Number of mistakes for RELU (Hidden 1): %d" % (np.abs(W1_out - debug_answer) > 0.001).sum())
+    # debug_answer[debug_answer < 0] = 0 # RELU
+    # print("Number of mistakes for RELU (Hidden 1): %d" % (np.abs(W1_out - debug_answer) > 0.001).sum())
 
     forward_pass(W1_out_gpu, W2_gpu, y_gpu, num_hiddens[0], num_outputs, num_outputs, block=block, grid=grid)
 
     # DEBUG
-    #cuda.memcpy_dtoh(y, y_gpu)
-    #debug_answer = np.dot(debug_answer, model['W2'])
-    #print("Number of mistakes for matrix multiply (Output): %d" % (np.abs(y - debug_answer) > 0.001).sum())
+    # cuda.memcpy_dtoh(y, y_gpu)
+    # debug_answer = np.dot(debug_answer, model['W2'])
+    # print("Number of mistakes for matrix multiply (Output): %d" % (np.abs(y - debug_answer) > 0.001).sum())
 
 
     # Work around for denominator that needs to be reset for each round
@@ -229,16 +229,16 @@ def forward():
     cuda.memcpy_dtoh(predictions, predictions_gpu)
 
     # DEBUG STATEMENT
-    #print("Number of mistakes for softmax: %d" % (np.abs(predictions - softmax_cpu(y)) > 0.001).sum())
-    #print("Prediction probabilities: %s" % str(predictions))
+    # print("Number of mistakes for softmax: %d" % (np.abs(predictions - softmax_cpu(y)) > 0.001).sum())
+    # print("Prediction probabilities: %s" % str(predictions))
 
     return predictions, W1_out
 
 
 def next_round():
-    #raw_input()
+    # raw_input()
     game.next_round()
-    #forward()
+    # forward()
 
 
 def update_learning_params(xs, hs, dlogps, rewards, action_raise=False):
@@ -254,13 +254,14 @@ def update_learning_params(xs, hs, dlogps, rewards, action_raise=False):
 
     hs.append(h)
 
-    # softmax loss gradient
+    # https://math.stackexchange.com/questions/945871/derivative-of-softmax-loss-function
     dlogsoftmax = action_prob
     dlogsoftmax[0, action] -= 1
     dlogps.append(dlogsoftmax)
 
     # Observation/input
-    xs.append(game._bot1.get_hand().flatten().astype(np.float32))
+    # xs.append(game._bot1.get_hand().flatten().astype(np.float32))
+    xs.append(game._bot1.get_hand())
 
     return action
 
@@ -271,23 +272,24 @@ def handle_action(action, rewards, bot_can_raise=True):
 
     if Constants.ACTIONS[action] == "FOLD":
         rewards.append(-1)
-	return True
+        return True
     elif Constants.ACTIONS[action] == "RAISE":
         action = update_learning_params(xs, hs, dlogps, rewards, action_raise=True)
-	rewards.append(0)
+        rewards.append(0)
         return handle_action(action, rewards, bot_can_raise=False)
 
     if Constants.ACTIONS[bot2_action] == "FOLD":
         rewards.append(1)
-	return True
+        return True
     elif Constants.ACTIONS[bot2_action] == "RAISE":
         action = update_learning_params(xs, hs, dlogps, rewards, action_raise=True)
-	rewards.append(0)
+        rewards.append(0)
         return handle_action(action, rewards, bot_can_raise=False)
 
     # Otherwise, both players have checked
     rewards.append(0)
     return False
+
 
 for i in range(NUM_EPISODES):
     game.new_game()
@@ -304,31 +306,26 @@ for i in range(NUM_EPISODES):
 
         next_round()
 
-
     if not is_fold:
         action = update_learning_params(xs, hs, dlogps, rewards)
         is_fold = handle_action(action, rewards)
-  
-    if not is_fold:
 
-	# Remove the last reward. The length of rewards must be equal to the number of actions
-	rewards.pop()
+    if not is_fold:
+        # Remove the last reward. The length of rewards must be equal to the number of actions
+        rewards.pop()
         # EVALUATE WINNER
         reward = game.evaluate_winner(game.get_p1_hand(), game.get_p2_hand())
         rewards.append(reward)  # +1 / -1 depending on who wins. 0 for tie
 
-
-
     rewards = discount_rewards(rewards)
-    #print(rewards)
-    reward_count.append(rewards[-1]) 
-
+    # print(rewards)
+    reward_count.append(rewards[-1])
 
     # standardize the rewards
     # (Special Case) Don't standardize if someone folds at the start (preflop)
-#    if len(rewards) != 1:
-#        rewards -= np.mean(rewards).astype(np.float32)
-#        rewards /= np.std(rewards).astype(np.float32)
+        #    if len(rewards) != 1:
+    #        rewards -= np.mean(rewards).astype(np.float32)
+    #        rewards /= np.std(rewards).astype(np.float32)
 
     # Cannot be done on GPU, order must be preserved
     epx = np.vstack(xs)
@@ -358,7 +355,7 @@ for i in range(NUM_EPISODES):
             grad_buffer[k] = np.zeros_like(v)
 
     if i%10 == 0:
-	print(rewards)
+        print(rewards)
 
 x = np.array(reward_count)
 unique, counts = np.unique(x, return_counts=True)
