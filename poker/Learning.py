@@ -114,16 +114,16 @@ def backward_policy(eph, epdlogp, epx):
     return {'W1': dW1, 'W2': dW2}
 
 
+
 # Pick highest probability action, with a certain probability of picking a different choice
 def pick_action(action_prob):
     r = np.random.uniform()
     total = 0
-    print(action_prob)
+    #print(action_prob)
     for i, p in enumerate(action_prob[0]):
         total += p
         if r <= total:
             return i
-
 
 # Compute discount rewards. Give more recent rewards more weight.
 # TODO Check if it's possible to change function to work on GPU. Probably not, each value depends on the previous
@@ -147,7 +147,7 @@ game = Game.Game()
 num_inputs = np.int32(52)  # TODO CALCULATE INPUT COUNT (Make 52x3, 52 for bets, 52 for round, 52 for hand)
 num_outputs = np.int32(3)  # CALL/CHECK, RAISE, FOLD
 num_hiddens = [np.int32(500)]  # Each value represents number of nodes per layer
-NUM_EPISODES = 10000
+NUM_EPISODES = 100000
 LEARNING_RATE = 1e-3
 GAMMA = 0.99  # discount factor for reward
 DECAY_RATE = 0.99  # decay factor for RMSProp leaky sum of grad^2
@@ -159,16 +159,16 @@ model['W2'] = 0.1 * np.random.randn(num_hiddens[0], num_outputs).astype(np.float
 grad_buffer = {k: np.zeros_like(v) for k, v in model.iteritems()}
 rmsprop_cache = {k: np.zeros_like(v) for k, v in model.iteritems()}
 
-
 def forward():
     # input = np.array([1, 2, 3, 4]).flatten().astype(np.float32)
 
     #input = game._bot1.get_hand().flatten().astype(np.float32)
     hand_input = game._bot1.get_hand()
     round_input = game.get_round_input()
-    input = np.append(hand_input, round_input)
-    print(input)
-    print(input.shape)
+    bet_input = game.get_bet_input()
+    input = np.concatenate((hand_input, bet_input, round_input)).astype(np.float32)
+    #print(input)
+    #print(input.shape)
 
 
     forward_pass = mod.get_function("forward_pass")
@@ -274,24 +274,37 @@ def update_learning_params(xs, hs, dlogps, rewards, action_raise=False):
 
 
 # Allow only one Raise per state. Return True if action for either player was FOLD
-def handle_action(action, rewards, bot_can_raise=True):
-    bot2_action = game.bot_decision(bot_can_raise)
+def handle_action(action, rewards):
+    
+
+    #bot2_action = game.bot_decision(bot_can_raise)
 
     if Constants.ACTIONS[action] == "FOLD":
-        rewards.append(-1)
+        rewards.append(-1*game.get_num_bets())
         return True
     elif Constants.ACTIONS[action] == "RAISE":
-        action = update_learning_params(xs, hs, dlogps, rewards, action_raise=True)
-        rewards.append(0)
-        return handle_action(action, rewards, bot_can_raise=False)
+        # ALREADY RAISED, why making another action?
+        #action = update_learning_params(xs, hs, dlogps, rewards, action_raise=True)
+        #rewards.append(0)
+        bot2_action = game.bot_decision(can_raise=False)
+        #return handle_action(action, rewards, bot_can_raise=False)
+    else:
+        bot2_action = game.bot_decision(can_raise=True)
+
+
 
     if Constants.ACTIONS[bot2_action] == "FOLD":
-        rewards.append(1)
+        rewards.append(1*game.get_num_bets())
         return True
     elif Constants.ACTIONS[bot2_action] == "RAISE":
         action = update_learning_params(xs, hs, dlogps, rewards, action_raise=True)
         rewards.append(0)
-        return handle_action(action, rewards, bot_can_raise=False)
+        if Constants.ACTIONS[action] == "FOLD":
+            rewards.append(-1*game.get_num_bets())
+            return True
+
+    if Constants.ACTIONS[bot2_action] == "RAISE" or Constants.ACTIONS[action] == "RAISE":
+        game.add_bet()
 
     # Otherwise, both players have checked
     rewards.append(0)
@@ -322,10 +335,13 @@ for i in range(NUM_EPISODES):
         rewards.pop()
         # EVALUATE WINNER
         reward = game.evaluate_winner(game.get_p1_hand(), game.get_p2_hand())
-        rewards.append(reward)  # +1 / -1 depending on who wins. 0 for tie
+
+        rewards.append(reward*game.get_num_bets())  # +1 / -1 depending on who wins. 0 for tie
 
     rewards = discount_rewards(rewards)
     # print(rewards)
+
+    # DEBUG
     reward_count.append(rewards[-1])
 
     # standardize the rewards
@@ -335,37 +351,65 @@ for i in range(NUM_EPISODES):
     #        rewards /= np.std(rewards).astype(np.float32)
 
     # Cannot be done on GPU, order must be preserved
-    epx = np.vstack(xs)
-    eph = np.vstack(hs)
-    epdlogp = np.vstack(dlogps)
-    epr = np.vstack(rewards)
-    epdlogp *= epr
+
+    if i % 100 == 0:
+
+
+        epx = np.vstack(xs)
+        eph = np.vstack(hs)
+        epdlogp = np.vstack(dlogps)
+        epr = np.vstack(rewards)
+        epdlogp *= epr
     
-    grad = backward_policy(eph, epdlogp, epx)
+        grad = backward_policy(eph, epdlogp, epx)
 
-    # TODO Check if it is worth it to do operation in parallel. 2 Matrices is 500x4, approx 40x40 matrix. Input size will get larger in the future
-    for k in model:
-        # accumulate grad over batch
-        grad_buffer[k] += grad[k]
+        # TODO Check if it is worth it to do operation in parallel. 2 Matrices is 500x4, approx 40x40 matrix. Input size will get larger in the future
+        for k in model:
+            # accumulate grad over batch
+            grad_buffer[k] += grad[k]
 
-    if i % 10 == 0:
-        for k, v in model.iteritems():
-            g = grad_buffer[k]  # gradient
+        if i % 1000 == 0:
+            for k, v in model.iteritems():
+                g = grad_buffer[k]  # gradient
 
-            # RMSprop: Gradient descent optimization algorithms
-            rmsprop_cache[k] = DECAY_RATE * rmsprop_cache[k] + (1 - DECAY_RATE) * g ** 2
+                # RMSprop: Gradient descent optimization algorithms
+                rmsprop_cache[k] = DECAY_RATE * rmsprop_cache[k] + (1 - DECAY_RATE) * g ** 2
 
-            # Update weights to minimize the error
-            model[k] -= LEARNING_RATE * g / (np.sqrt(rmsprop_cache[k]) + 1e-5)
+               # Update weights to minimize the error
+                model[k] -= LEARNING_RATE * g / (np.sqrt(rmsprop_cache[k]) + 1e-5)
 
-            # Reset grad buffer
-            grad_buffer[k] = np.zeros_like(v)
+                # Reset grad buffer
+                grad_buffer[k] = np.zeros_like(v)
 
-    if i%10 == 0:
-        print(rewards)
+#    if i%10 == 0:
+#        print(rewards)
+
+    if (i>0 and i%2000 == 0):
+        x = np.array(reward_count)
+        unique, counts = np.unique(x, return_counts=True)
+        values = np.asarray((unique, counts)).T
+        earning = 0
+        for i in range(values.shape[0]):
+            earning += values[i][1]*values[i][0]
+        print(earning)
+        reward_count = []
+
+
 
 x = np.array(reward_count)
 unique, counts = np.unique(x, return_counts=True)
 
-print np.asarray((unique, counts)).T
-
+values = np.asarray((unique, counts)).T
+print(values)
+earning = 0
+for i in range(11):
+    earning += values[i][1]*values[i][0]
+loss = 0
+for i in range(0, 5):
+    loss += values[i][1]*values[i][0]
+win = 0
+for i in range(6, 11):
+    win += values[i][1]*values[i][0]
+print(earning)
+print(win)
+print(loss)

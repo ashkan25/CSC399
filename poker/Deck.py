@@ -7,8 +7,8 @@ class Deck:
         self._deck = self._setup()
 
     def _setup(self):
-        cards = np.empty(shape=(Constants.NUM_OF_SUITES*Constants.NUM_OF_VALUES, 2))
-        for i in range(Constants.NUM_OF_SUITES):
+        cards = np.empty(shape=(Constants.NUM_OF_SUITS*Constants.NUM_OF_VALUES, 2))
+        for i in range(Constants.NUM_OF_SUITS):
             for j in range(Constants.NUM_OF_VALUES):
                 cards[(i*Constants.NUM_OF_VALUES) + j] = [i,j]
         np.random.shuffle(cards)
