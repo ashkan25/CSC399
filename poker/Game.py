@@ -38,6 +38,9 @@ class Game:
         self.round_input_update()
         self._round += 1
 
+    def get_input(self):
+        return np.concatenate((self._bot1.get_hand(), self._bet_input, self._round_input)).astype(np.float32) 
+
     def next_round(self):
 
         if self._round == Constants.FLOP:

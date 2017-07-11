@@ -1,3 +1,4 @@
+from __future__ import division
 import Hand
 import Deck
 import pycuda.driver as cuda
@@ -6,6 +7,7 @@ from pycuda.compiler import SourceModule
 import Constants
 import numpy as np
 import Game
+import math
 
 # TODO Make sure you handle when matrix is bigger than NUM_BLOCKS*NUM_THREADS
 mod = SourceModule("""
@@ -49,29 +51,31 @@ mod = SourceModule("""
 
     }
     
-    __constant__ int TILE_SIZE = 16
-    __constant__ int BLOCK_ROWS = 16
-    __global__ void matrix_transpose(float *in, float *out) {
-    
-        __shared__ float tile[TILE_DIM][TILE_DIM];
+    #define TILE_DIM 32
+    #define BLOCK_ROWS 8
+    #define nreps 1
+    __global__ void matrix_transpose(int width, int height, float *in, float *out) {
+        __shared__ float block[TILE_DIM][TILE_DIM];
+        int xIndex = blockIdx.x * TILE_DIM + threadIdx.x;
+        int yIndex = blockIdx.y * TILE_DIM + threadIdx.y;
 
-        int row = blockIdx.x * TILE_SIZE + threadIdx.x;
-        int col = blockIdx.y * TILE_SIZE + threadIdx.y;
-        
-        
-        for (int i = 0; i < TILE_SIZE; i += BLOCK_ROWS) {
-            tile[threadIdx.y + i][threadIdx.x] = in[(col + i)* width + row];
-        }
-        
-        __syncthreads();
+        int index = xIndex + (yIndex*width);
+ 
+        xIndex = blockIdx.y * TILE_DIM + threadIdx.x;
+        yIndex = blockIdx.x * TILE_DIM + threadIdx.y;
+        int index_out = xIndex + (yIndex*height); 
 
-        // Transposed indexes
-        row = blockIdx.y * TILE_DIM + threadIdx.x;
-        col = blockIdx.x * TILE_DIM + threadIdx.y;
-        
-        for (int i = 0; i < TILE_DIM; i += BLOCK_ROWS) {
-            out[(col + i) * width + row] = tile[threadIdx.x][threadIdx.y + i];
-        }
+        for (int r=0; r<nreps; r++) {
+            for (int i=0; i < TILE_DIM; i += BLOCK_ROWS) {
+                block[threadIdx.y+i][threadIdx.x] =
+                in[index+i*width];
+            }
+
+            __syncthreads();
+            for (int i=0; i < TILE_DIM; i += BLOCK_ROWS) {
+                out[index_out+(i*height)] =block[threadIdx.x][threadIdx.y+i];
+            }
+        }   
     }
 
     // TODO optimize using shared memory
@@ -143,12 +147,14 @@ def backward_policy(eph, epdlogp, epx):
 def pick_action(action_prob):
     r = np.random.uniform()
     total = 0
-    # print(action_prob)
+    print(action_prob)
     for i, p in enumerate(action_prob[0]):
         total += p
         if r <= total:
             return i
 
+    # action_prob should always sum to 1. This is in case of small rounding error
+    return i
 
 # Compute discount rewards. Give more recent rewards more weight.
 # TODO Check if it's possible to change function to work on GPU. Probably not, each value depends on the previous
@@ -169,9 +175,9 @@ def discount_rewards(rewards, discount_factor=0.98):
 # ------------------------------------------------------------------
 game = Game.Game()
 
-num_inputs = np.int32(52)  # TODO CALCULATE INPUT COUNT (Make 52x3, 52 for bets, 52 for round, 52 for hand)
+num_inputs = np.int32(52*3)  # TODO CALCULATE INPUT COUNT (Make 52x3, 52 for bets, 52 for round, 52 for hand)
 num_outputs = np.int32(3)  # CALL/CHECK, RAISE, FOLD
-num_hiddens = [np.int32(500)]  # Each value represents number of nodes per layer
+num_hiddens = [np.int32(1000)]  # Each value represents number of nodes per layer
 NUM_EPISODES = 100000
 LEARNING_RATE = 1e-3
 GAMMA = 0.99  # discount factor for reward
@@ -189,11 +195,13 @@ def forward():
     # input = np.array([1, 2, 3, 4]).flatten().astype(np.float32)
 
     # input = game._bot1.get_hand().flatten().astype(np.float32)
-    hand_input = game._bot1.get_hand()
-    round_input = game.get_round_input()
-    bet_input = game.get_bet_input()
-    input = np.concatenate((hand_input, bet_input, round_input)).astype(np.float32)
-    # print(input)
+#    hand_input = game._bot1.get_hand()
+#    round_input = game.get_round_input()
+#    bet_input = game.get_bet_input()
+#   input = np.concatenate((hand_input, bet_input, round_input)).astype(np.float32)
+    input = game.get_input() 
+
+   # print(input)
     # print(input.shape)
 
 
@@ -224,11 +232,11 @@ def forward():
 
     block_x, block_y = 16, 16
     block = (block_x, block_y, 1)
-    grid = (model['W1'].shape[1] / block_x,
-            input.shape[0] / block_x)
+    grid = (int(math.ceil(model['W1'].shape[1] / block_x)),
+            int(math.ceil(input.shape[0] / block_x)))
 
-    # print("BLOCK DIM: %s" % str(block))
-    # print("GRID  DIM: %s" % str(grid))
+    #print("BLOCK DIM: %s" % str(block))
+    #print("GRID  DIM: %s" % str(grid))
 
     forward_pass(input_gpu, W1_gpu, W1_out_gpu, num_inputs, num_hiddens[0], num_hiddens[0], block=block, grid=grid)
 
@@ -247,9 +255,12 @@ def forward():
 
     block_x, block_y = 16, 16
     block = (block_x, block_y, 1)
-    grid = (model['W2'].shape[1] / block_x,
-            W1_out.shape[0] / block_x)
+    grid = (int(math.ceil(model['W2'].shape[1] / block_x)),
+            int(math.ceil(W1_out.shape[1] / block_x)))
 
+
+    #print(grid)
+    #print(block)
     forward_pass(W1_out_gpu, W2_gpu, y_gpu, num_hiddens[0], num_outputs, num_outputs, block=block, grid=grid)
 
     # DEBUG
@@ -271,6 +282,28 @@ def forward():
     # print("Prediction probabilities: %s" % str(predictions))
 
     return predictions, W1_out
+
+def backward():
+    a = np.random.random((64, 512)).astype(np.float32)
+    a_gpu = cuda.mem_alloc(a.nbytes)
+    cuda.memcpy_htod(a_gpu, a)
+    transpose = mod.get_function("matrix_transpose")
+
+    b = np.zeros((512, 64)).astype(np.float32)
+    b_gpu = cuda.mem_alloc(b.nbytes)
+    cuda.memcpy_htod(b_gpu, b)
+    
+
+    block = (32, 8, 1)
+#    grid = (64/32, 512/32) 
+    grid = (2, 16)
+
+    transpose(np.int32(512), np.int32(64), a_gpu, b_gpu, block=block, grid=grid)
+
+    cuda.memcpy_dtoh(b, b_gpu)
+    print(b[2])
+    print(a.T[2])
+    print("NUMBER OF MISTAKES: %d" % (np.abs(b-a.T) > 0.001).sum())
 
 
 def next_round():
@@ -299,7 +332,7 @@ def update_learning_params(xs, hs, dlogps, rewards, action_raise=False):
 
     # Observation/input
     # xs.append(game._bot1.get_hand().flatten().astype(np.float32))
-    xs.append(game._bot1.get_hand())
+    xs.append(game.get_input())
 
     return action
 
@@ -338,6 +371,7 @@ def handle_action(action, rewards):
     return False
 
 
+
 for i in range(NUM_EPISODES):
     game.new_game()
 
@@ -352,6 +386,11 @@ for i in range(NUM_EPISODES):
             break
 
         next_round()
+
+
+    backward()
+    break
+
 
     if not is_fold:
         action = update_learning_params(xs, hs, dlogps, rewards)
