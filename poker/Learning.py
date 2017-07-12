@@ -53,29 +53,38 @@ mod = SourceModule("""
     
     #define TILE_DIM 32
     #define BLOCK_ROWS 8
-    #define nreps 1
-    __global__ void matrix_transpose(int width, int height, float *in, float *out) {
-        __shared__ float block[TILE_DIM][TILE_DIM];
-        int xIndex = blockIdx.x * TILE_DIM + threadIdx.x;
-        int yIndex = blockIdx.y * TILE_DIM + threadIdx.y;
+    __global__ void matrix_transpose(int width, int height, int tile_dim, int block_rows, float *in, float *out) {
+        extern __shared__ float tile[];
 
-        int index = xIndex + (yIndex*width);
- 
-        xIndex = blockIdx.y * TILE_DIM + threadIdx.x;
-        yIndex = blockIdx.x * TILE_DIM + threadIdx.y;
-        int index_out = xIndex + (yIndex*height); 
+        int blockIdx_x, blockIdx_y;
 
-        for (int r=0; r<nreps; r++) {
-            for (int i=0; i < TILE_DIM; i += BLOCK_ROWS) {
-                block[threadIdx.y+i][threadIdx.x] =
-                in[index+i*width];
-            }
+        // do diagonal reordering
+        if (width == height) {
+            blockIdx_y = blockIdx.x;
+            blockIdx_x = (blockIdx.x+blockIdx.y)%gridDim.x;
+        } else {
+            int bid = blockIdx.x + gridDim.x*blockIdx.y;
+            blockIdx_y = bid%gridDim.y;
+            blockIdx_x = ((bid/gridDim.y)+blockIdx_y)%gridDim.x;
+        }
 
-            __syncthreads();
-            for (int i=0; i < TILE_DIM; i += BLOCK_ROWS) {
-                out[index_out+(i*height)] =block[threadIdx.x][threadIdx.y+i];
-            }
-        }   
+        int xIndex = blockIdx_x * tile_dim + threadIdx.x;
+        int yIndex = blockIdx_y * tile_dim + threadIdx.y;
+        int index_in = xIndex + (yIndex)*width;
+
+        xIndex = blockIdx_y * tile_dim + threadIdx.x;
+        yIndex = blockIdx_x * tile_dim + threadIdx.y;
+        int index_out = xIndex + (yIndex)*height;
+
+        for (int i=0; i<tile_dim; i+=block_rows) {
+          tile[(threadIdx.y+i)*tile_dim +threadIdx.x] = in[index_in+i*width];
+        }
+
+        __syncthreads();
+
+        for (int i=0; i<tile_dim; i+=block_rows) {
+            out[index_out+i*height] = tile[(threadIdx.x*tile_dim) + threadIdx.y+i];
+        }
     }
 
     // TODO optimize using shared memory
@@ -138,6 +147,8 @@ def backward_policy(eph, epdlogp, epx):
     dh = epdlogp.dot(model['W2'].T)
     dh[eph <= 0] = 0
 
+
+    # NOTE: epx can be an Nx1 matrix. When exported to CUDA, no transpose is required when shape is Nx1
     dW1 = epx.T.dot(dh)
 
     return {'W1': dW1, 'W2': dW2}
@@ -147,7 +158,7 @@ def backward_policy(eph, epdlogp, epx):
 def pick_action(action_prob):
     r = np.random.uniform()
     total = 0
-    print(action_prob)
+    #print(action_prob)
     for i, p in enumerate(action_prob[0]):
         total += p
         if r <= total:
@@ -284,25 +295,39 @@ def forward():
     return predictions, W1_out
 
 def backward():
-    a = np.random.random((64, 512)).astype(np.float32)
+
+    # Example of using the Matrix Transpose
+
+    x = 40000
+    y = 30903
+    a = []
+    for i in range(x):
+        temp = []
+        for j in range(y):
+            temp.append(i*y + j)
+        a.append(temp)
+    a = np.array(a).astype(np.float32)
+    
     a_gpu = cuda.mem_alloc(a.nbytes)
     cuda.memcpy_htod(a_gpu, a)
     transpose = mod.get_function("matrix_transpose")
 
-    b = np.zeros((512, 64)).astype(np.float32)
+    b = np.zeros((y, x)).astype(np.float32)
     b_gpu = cuda.mem_alloc(b.nbytes)
     cuda.memcpy_htod(b_gpu, b)
     
+    print(a.shape)
+    tile_dim = 20#a.shape[0]
+    block_rows = 20#a.shape[0]
 
-    block = (32, 8, 1)
-#    grid = (64/32, 512/32) 
-    grid = (2, 16)
+    grid = (int(math.ceil(a.shape[1]/tile_dim)), 200)#1)
+    block = (tile_dim, block_rows, 1)
 
-    transpose(np.int32(512), np.int32(64), a_gpu, b_gpu, block=block, grid=grid)
+    transpose(np.int32(a.shape[1]), np.int32(a.shape[0]), np.int32(tile_dim), np.int32(block_rows), a_gpu, b_gpu, block=block, grid=grid, shared=(np.float32().nbytes*tile_dim*(tile_dim+1)))
 
     cuda.memcpy_dtoh(b, b_gpu)
-    print(b[2])
-    print(a.T[2])
+    print(b)
+    print(a)
     print("NUMBER OF MISTAKES: %d" % (np.abs(b-a.T) > 0.001).sum())
 
 
