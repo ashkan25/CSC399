@@ -53,7 +53,7 @@ mod = SourceModule("""
     
     #define TILE_DIM 32
     #define BLOCK_ROWS 8
-    __global__ void matrix_transpose(int width, int height, int tile_dim, int block_rows, float *in, float *out) {
+    __global__ void matrix_transpose(int width, int height, int tile_dim, float *in, float *out) {
         extern __shared__ float tile[];
 
         int blockIdx_x, blockIdx_y;
@@ -76,13 +76,13 @@ mod = SourceModule("""
         yIndex = blockIdx_x * tile_dim + threadIdx.y;
         int index_out = xIndex + (yIndex)*height;
 
-        for (int i=0; i<tile_dim; i+=block_rows) {
+        for (int i=0; i<tile_dim; i+=tile_dim) {
           tile[(threadIdx.y+i)*tile_dim +threadIdx.x] = in[index_in+i*width];
         }
 
         __syncthreads();
 
-        for (int i=0; i<tile_dim; i+=block_rows) {
+        for (int i=0; i<tile_dim; i+=tile_dim) {
             out[index_out+i*height] = tile[(threadIdx.x*tile_dim) + threadIdx.y+i];
         }
     }
@@ -147,7 +147,6 @@ def backward_policy(eph, epdlogp, epx):
     dh = epdlogp.dot(model['W2'].T)
     dh[eph <= 0] = 0
 
-
     # NOTE: epx can be an Nx1 matrix. When exported to CUDA, no transpose is required when shape is Nx1
     dW1 = epx.T.dot(dh)
 
@@ -158,7 +157,7 @@ def backward_policy(eph, epdlogp, epx):
 def pick_action(action_prob):
     r = np.random.uniform()
     total = 0
-    #print(action_prob)
+    # print(action_prob)
     for i, p in enumerate(action_prob[0]):
         total += p
         if r <= total:
@@ -166,6 +165,7 @@ def pick_action(action_prob):
 
     # action_prob should always sum to 1. This is in case of small rounding error
     return i
+
 
 # Compute discount rewards. Give more recent rewards more weight.
 # TODO Check if it's possible to change function to work on GPU. Probably not, each value depends on the previous
@@ -186,9 +186,9 @@ def discount_rewards(rewards, discount_factor=0.98):
 # ------------------------------------------------------------------
 game = Game.Game()
 
-num_inputs = np.int32(52*3)  # TODO CALCULATE INPUT COUNT (Make 52x3, 52 for bets, 52 for round, 52 for hand)
+num_inputs = np.int32(52 * 3)  # TODO CALCULATE INPUT COUNT (Make 52x3, 52 for bets, 52 for round, 52 for hand)
 num_outputs = np.int32(3)  # CALL/CHECK, RAISE, FOLD
-num_hiddens = [np.int32(1000)]  # Each value represents number of nodes per layer
+num_hiddens = [np.int32(1024)]  # Each value represents number of nodes per layer
 NUM_EPISODES = 100000
 LEARNING_RATE = 1e-3
 GAMMA = 0.99  # discount factor for reward
@@ -206,13 +206,13 @@ def forward():
     # input = np.array([1, 2, 3, 4]).flatten().astype(np.float32)
 
     # input = game._bot1.get_hand().flatten().astype(np.float32)
-#    hand_input = game._bot1.get_hand()
-#    round_input = game.get_round_input()
-#    bet_input = game.get_bet_input()
-#   input = np.concatenate((hand_input, bet_input, round_input)).astype(np.float32)
-    input = game.get_input() 
+    #    hand_input = game._bot1.get_hand()
+    #    round_input = game.get_round_input()
+    #    bet_input = game.get_bet_input()
+    #   input = np.concatenate((hand_input, bet_input, round_input)).astype(np.float32)
+    input = game.get_input()
 
-   # print(input)
+    # print(input)
     # print(input.shape)
 
 
@@ -228,6 +228,7 @@ def forward():
     y = np.zeros((1, num_outputs)).astype(np.float32)
     predictions = np.zeros((1, num_outputs)).astype(np.float32)
 
+    # TODO Look into adding streams to allocations and memcpy
     input_gpu = cuda.mem_alloc(input.nbytes)
     W1_gpu = cuda.mem_alloc(model['W1'].nbytes)
     W2_gpu = cuda.mem_alloc(model['W2'].nbytes)
@@ -246,8 +247,8 @@ def forward():
     grid = (int(math.ceil(model['W1'].shape[1] / block_x)),
             int(math.ceil(input.shape[0] / block_x)))
 
-    #print("BLOCK DIM: %s" % str(block))
-    #print("GRID  DIM: %s" % str(grid))
+    # print("BLOCK DIM: %s" % str(block))
+    # print("GRID  DIM: %s" % str(grid))
 
     forward_pass(input_gpu, W1_gpu, W1_out_gpu, num_inputs, num_hiddens[0], num_hiddens[0], block=block, grid=grid)
 
@@ -269,9 +270,8 @@ def forward():
     grid = (int(math.ceil(model['W2'].shape[1] / block_x)),
             int(math.ceil(W1_out.shape[1] / block_x)))
 
-
-    #print(grid)
-    #print(block)
+    # print(grid)
+    # print(block)
     forward_pass(W1_out_gpu, W2_gpu, y_gpu, num_hiddens[0], num_outputs, num_outputs, block=block, grid=grid)
 
     # DEBUG
@@ -294,9 +294,58 @@ def forward():
 
     return predictions, W1_out
 
-def backward():
 
-    # Example of using the Matrix Transpose
+def backward():
+    # dW2 = eph.T.dot(epdlogp)
+    #
+    # dh = epdlogp.dot(model['W2'].T)
+    # dh[eph <= 0] = 0
+    #
+    #
+    # # NOTE: epx can be an Nx1 matrix. When exported to CUDA, no transpose is required when shape is Nx1
+    # dW1 = epx.T.dot(dh)
+    #
+    # return {'W1': dW1, 'W2': dW2}
+
+    transpose = mod.get_function("matrix_transpose")
+    softmax = mod.get_function("softmax")
+    relu = mod.get_function("relu")
+
+    dW2 = np.zeros((eph.shape[1], epdlogp.shape[1])).astype(np.float32)
+    dW1 = np.zeros((epx.shape[1], model['W2'].shape[0])).astype(np.float32)
+
+    # TODO Look into adding streams to allocations and memcpy
+    eph_gpu = cuda.mem_alloc(eph.nbytes)
+    epdlogp_gpu = cuda.mem_alloc(epdlogp.nbytes)
+    epx_gpu = cuda.mem_alloc(epx.nbytes)
+    eph_T_gpu = cuda.mem_alloc(eph.nbytes)
+    dW2_gpu = cuda.mem_alloc(dW2.nbytes)
+    dh_gpu = cuda.mem_alloc(epdlogp.shape[0] * model['W2'].shape[0] * np.float32().nbytes)
+
+    cuda.memcpy_htod(eph, eph_gpu)
+    cuda.memcpy_htod(epx, epx_gpu)
+    cuda.memcpy_htod(epdlogp, epdlogp_gpu)
+
+    # DEBUG
+    eph_T = np.zeros(eph.shape).astype(np.float32)
+    dh = np.zeros((epdlogp.shape[0], model['W2'].shape[0])).astype(np.float32)
+
+    if a.shape[0] % 32 == 0:
+        tile_dim = 32
+    elif a.shape[0] < 32:
+        tile_dim = a.shape[0]
+    else:
+        raise Exception("Invalid x-dim: %d. x-dim must be multiple of 32 or less than 32.", a.shape[0])
+
+    grid = (int(math.ceil(eph.shape[1] / tile_dim)), 200)  # 1)
+    block = (tile_dim, tile_dim, 1)
+
+    transpose(np.int32(eph.shape[1]), np.int32(eph.shape[0]), np.int32(tile_dim), eph_gpu, eph_T_gpu, block=block,
+              grid=grid, shared=(np.float32().nbytes * tile_dim * (tile_dim + 1)))
+
+    # DEBUG
+    cuda.memcpy_dtoh(eph_T, eph_T_gpu)
+    print("Number of mistakes for Transpose (eph): %d" % (np.abs(eph_T - eph.T) > 0.001).sum())
 
     x = 40000
     y = 30903
@@ -304,31 +353,29 @@ def backward():
     for i in range(x):
         temp = []
         for j in range(y):
-            temp.append(i*y + j)
+            temp.append(i * y + j)
         a.append(temp)
     a = np.array(a).astype(np.float32)
-    
+
     a_gpu = cuda.mem_alloc(a.nbytes)
     cuda.memcpy_htod(a_gpu, a)
-    transpose = mod.get_function("matrix_transpose")
 
     b = np.zeros((y, x)).astype(np.float32)
     b_gpu = cuda.mem_alloc(b.nbytes)
     cuda.memcpy_htod(b_gpu, b)
-    
+
     print(a.shape)
-    tile_dim = 20#a.shape[0]
-    block_rows = 20#a.shape[0]
 
-    grid = (int(math.ceil(a.shape[1]/tile_dim)), 200)#1)
-    block = (tile_dim, block_rows, 1)
+    grid = (int(math.ceil(a.shape[1] / tile_dim)), 200)  # 1)
+    block = (tile_dim, tile_dim, 1)
 
-    transpose(np.int32(a.shape[1]), np.int32(a.shape[0]), np.int32(tile_dim), np.int32(block_rows), a_gpu, b_gpu, block=block, grid=grid, shared=(np.float32().nbytes*tile_dim*(tile_dim+1)))
+    transpose(np.int32(a.shape[1]), np.int32(a.shape[0]), np.int32(tile_dim), a_gpu, b_gpu, block=block, grid=grid,
+              shared=(np.float32().nbytes * tile_dim * (tile_dim + 1)))
 
     cuda.memcpy_dtoh(b, b_gpu)
     print(b)
     print(a)
-    print("NUMBER OF MISTAKES: %d" % (np.abs(b-a.T) > 0.001).sum())
+    print("NUMBER OF MISTAKES: %d" % (np.abs(b - a.T) > 0.001).sum())
 
 
 def next_round():
@@ -396,7 +443,6 @@ def handle_action(action, rewards):
     return False
 
 
-
 for i in range(NUM_EPISODES):
     game.new_game()
 
@@ -412,10 +458,8 @@ for i in range(NUM_EPISODES):
 
         next_round()
 
-
     backward()
     break
-
 
     if not is_fold:
         action = update_learning_params(xs, hs, dlogps, rewards)
