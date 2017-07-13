@@ -322,22 +322,22 @@ def backward():
     dW2_gpu = cuda.mem_alloc(dW2.nbytes)
     dh_gpu = cuda.mem_alloc(epdlogp.shape[0] * model['W2'].shape[0] * np.float32().nbytes)
 
-    cuda.memcpy_htod(eph, eph_gpu)
-    cuda.memcpy_htod(epx, epx_gpu)
-    cuda.memcpy_htod(epdlogp, epdlogp_gpu)
+    cuda.memcpy_htod(eph_gpu, eph)
+    cuda.memcpy_htod(epx_gpu, epx)
+    cuda.memcpy_htod(epdlogp_gpu, epdlogp)
 
     # DEBUG
-    eph_T = np.zeros(eph.shape).astype(np.float32)
+    eph_T = np.zeros((eph.shape[1], eph.shape[0])).astype(np.float32)
     dh = np.zeros((epdlogp.shape[0], model['W2'].shape[0])).astype(np.float32)
 
-    if a.shape[0] % 32 == 0:
+    if eph.shape[0] % 32 == 0:
         tile_dim = 32
-    elif a.shape[0] < 32:
-        tile_dim = a.shape[0]
+    elif eph.shape[0] < 32:
+        tile_dim = eph.shape[0]
     else:
         raise Exception("Invalid x-dim: %d. x-dim must be multiple of 32 or less than 32.", a.shape[0])
 
-    grid = (int(math.ceil(eph.shape[1] / tile_dim)), 200)  # 1)
+    grid = (int(math.ceil(eph.shape[1] / tile_dim)), int(eph.shape[0]/tile_dim))
     block = (tile_dim, tile_dim, 1)
 
     transpose(np.int32(eph.shape[1]), np.int32(eph.shape[0]), np.int32(tile_dim), eph_gpu, eph_T_gpu, block=block,
@@ -347,35 +347,44 @@ def backward():
     cuda.memcpy_dtoh(eph_T, eph_T_gpu)
     print("Number of mistakes for Transpose (eph): %d" % (np.abs(eph_T - eph.T) > 0.001).sum())
 
-    x = 40000
-    y = 30903
-    a = []
-    for i in range(x):
-        temp = []
-        for j in range(y):
-            temp.append(i * y + j)
-        a.append(temp)
-    a = np.array(a).astype(np.float32)
+    block_x, block_y = 16, 16
+    block = (block_x, block_y, 1)
+    grid = (int(math.ceil(eph.shape[0] / block_x)),
+            int(math.ceil(epdlogp.shape[0] / block_x)))
 
-    a_gpu = cuda.mem_alloc(a.nbytes)
-    cuda.memcpy_htod(a_gpu, a)
+    # print("BLOCK DIM: %s" % str(block))
+    # print("GRID  DIM: %s" % str(grid))
 
-    b = np.zeros((y, x)).astype(np.float32)
-    b_gpu = cuda.mem_alloc(b.nbytes)
-    cuda.memcpy_htod(b_gpu, b)
+    forward_pass(input_gpu, W1_gpu, W1_out_gpu, num_inputs, num_hiddens[0], num_hiddens[0], block=block, grid=grid)
 
-    print(a.shape)
+    #x = 40000
+    #y = 30903
+    #a = []
+    #for i in range(x):
+    #    temp = []
+    #    for j in range(y):
+    #        temp.append(i * y + j)
+    #    a.append(temp)
+    #a = np.array(a).astype(np.float32)
+    #a_gpu = cuda.mem_alloc(a.nbytes)
+    #cuda.memcpy_htod(a_gpu, a)
 
-    grid = (int(math.ceil(a.shape[1] / tile_dim)), 200)  # 1)
-    block = (tile_dim, tile_dim, 1)
+    #b = np.zeros((y, x)).astype(np.float32)
+    #b_gpu = cuda.mem_alloc(b.nbytes)
+    #cuda.memcpy_htod(b_gpu, b)
 
-    transpose(np.int32(a.shape[1]), np.int32(a.shape[0]), np.int32(tile_dim), a_gpu, b_gpu, block=block, grid=grid,
-              shared=(np.float32().nbytes * tile_dim * (tile_dim + 1)))
+    #print(a.shape)
 
-    cuda.memcpy_dtoh(b, b_gpu)
-    print(b)
-    print(a)
-    print("NUMBER OF MISTAKES: %d" % (np.abs(b - a.T) > 0.001).sum())
+    #grid = (int(math.ceil(a.shape[1] / tile_dim)), 200)  # 1)
+    #block = (tile_dim, tile_dim, 1)
+
+    #transpose(np.int32(a.shape[1]), np.int32(a.shape[0]), np.int32(tile_dim), a_gpu, b_gpu, block=block, grid=grid,
+    #          shared=(np.float32().nbytes * tile_dim * (tile_dim + 1)))
+
+    #cuda.memcpy_dtoh(b, b_gpu)
+    #print(b)
+    #print(a)
+    #print("NUMBER OF MISTAKES: %d" % (np.abs(b - a.T) > 0.001).sum())
 
 
 def next_round():
@@ -458,9 +467,6 @@ for i in range(NUM_EPISODES):
 
         next_round()
 
-    backward()
-    break
-
     if not is_fold:
         action = update_learning_params(xs, hs, dlogps, rewards)
         is_fold = handle_action(action, rewards)
@@ -494,6 +500,9 @@ for i in range(NUM_EPISODES):
         epdlogp = np.vstack(dlogps)
         epr = np.vstack(rewards)
         epdlogp *= epr
+
+        backward()
+        break
 
         grad = backward_policy(eph, epdlogp, epx)
 
