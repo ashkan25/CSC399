@@ -18,6 +18,7 @@ mod = SourceModule("""
 
     __global__ void relu(const int width, const int height, float* a) {
 
+
         int row = blockIdx.y * blockDim.y + threadIdx.y;
         int col = blockIdx.x * blockDim.x + threadIdx.x;
 
@@ -145,6 +146,7 @@ def backward_policy(eph, epdlogp, epx):
     dW2 = eph.T.dot(epdlogp)
 
     dh = epdlogp.dot(model['W2'].T)
+
     dh[eph <= 0] = 0
 
     # NOTE: epx can be an Nx1 matrix. When exported to CUDA, no transpose is required when shape is Nx1
@@ -189,7 +191,7 @@ game = Game.Game()
 num_inputs = np.int32(52 * 3)  # TODO CALCULATE INPUT COUNT (Make 52x3, 52 for bets, 52 for round, 52 for hand)
 num_outputs = np.int32(3)  # CALL/CHECK, RAISE, FOLD
 num_hiddens = [np.int32(1024)]  # Each value represents number of nodes per layer
-NUM_EPISODES = 100000
+NUM_EPISODES = 20000
 LEARNING_RATE = 1e-3
 GAMMA = 0.99  # discount factor for reward
 DECAY_RATE = 0.99  # decay factor for RMSProp leaky sum of grad^2
@@ -201,8 +203,8 @@ model['W2'] = 0.1 * np.random.randn(num_hiddens[0], num_outputs).astype(np.float
 grad_buffer = {k: np.zeros_like(v) for k, v in model.iteritems()}
 rmsprop_cache = {k: np.zeros_like(v) for k, v in model.iteritems()}
 
-
 def forward():
+
     # input = np.array([1, 2, 3, 4]).flatten().astype(np.float32)
 
     # input = game._bot1.get_hand().flatten().astype(np.float32)
@@ -302,6 +304,10 @@ def backward(eph, epdlogp, epx):
     softmax = mod.get_function("softmax")
     relu = mod.get_function("relu")
 
+#    eph = eph.astype(np.float32)
+#    epdlogp = epdlogp.astype(np.float32)
+#    epx = epx.astype(np.float32)
+
     dW2 = np.zeros((eph.shape[1], epdlogp.shape[1])).astype(np.float32)
     dW1 = np.zeros((epx.shape[1], model['W2'].shape[0])).astype(np.float32)
 
@@ -389,7 +395,7 @@ def backward(eph, epdlogp, epx):
 
     # --------------------
 
-    # --- Matrix multiply epdlogp and W2 transpose
+    # --- Matrix multiply epdlogp and W2 transpose ---
 
     block_x, block_y = 16, 16
     block = (block_x, block_y, 1)
@@ -402,6 +408,7 @@ def backward(eph, epdlogp, epx):
     cuda.memcpy_dtoh(dh, dh_gpu)
 
     # DEBUG
+#    print("Number of mistakes for dot product (dh): %d" % (np.abs(dh - np.dot(epdlogp, model['W2'].T)) > 0.001).sum())
     #print("Number of mistakes for dot product (dh): %d" % (np.abs(dh - np.dot(epdlogp, model['W2'].T)) > 0.001).sum())
 
 
@@ -410,9 +417,9 @@ def backward(eph, epdlogp, epx):
     cuda.memcpy_dtoh(dh, dh_gpu)
 
     # DEBUG
-    debug_answer = np.dot(epdlogp, model['W2'].T)
+    debug_answer = np.dot(epdlogp, model['W2'].T).astype(np.float32)
     debug_answer[debug_answer < 0] = 0 # RELU
-    #print("Number of mistakes for RELU (dW2): %d" % (np.abs(dh - debug_answer) > 0.001).sum())
+    #print("Number of mistakes for RELU (dh): %d" % (np.abs(dh - debug_answer) > 0.001).sum())
 
     # --------------------
 
@@ -452,10 +459,10 @@ def backward(eph, epdlogp, epx):
     cuda.memcpy_dtoh(dW1, dW1_gpu)
 
     # DEBUG
-    debug_answer = np.dot(epx_T, dh)
+    debug_answer = np.dot(epx.T, dh)
     #print("Number of mistakes for dot product (dW1): %d" % (np.abs(dW1 - debug_answer) > 0.001).sum())
 
-    return {'W1' : dW1, 'W2': dW2}
+    return {'W1' : dW1, 'W2': dW2}, dh
 
 def next_round():
     # raw_input()
@@ -521,7 +528,6 @@ def handle_action(action, rewards):
     rewards.append(0)
     return False
 
-
 for i in range(NUM_EPISODES):
     game.new_game()
 
@@ -571,11 +577,13 @@ for i in range(NUM_EPISODES):
         epr = np.vstack(rewards)
         epdlogp *= epr
 
+
         grad = backward_policy(eph, epdlogp, epx)
-        grad2 = backward(eph, epdlogp, epx)
+        #grad2, dh2 = backward(eph, epdlogp, epx)
  
 #        print((np.abs(grad['W1'] - grad2['W1']) > 0.001).sum())
-        print((np.abs(grad['W2'] - grad2['W2']) > 0.001).sum())
+#        print((np.abs(dh - dh2) > 0.001).sum())
+#        print((np.abs(grad['W2'] - grad2['W2']) > 0.001).sum())
 
 
         # TODO Check if it is worth it to do operation in parallel. 2 Matrices is 500x4, approx 40x40 matrix. Input size will get larger in the future
