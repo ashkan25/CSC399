@@ -33,6 +33,23 @@ mod = SourceModule("""
         }
     }
 
+    __global__ void relu_backwards(const int width, const int height, float* a, float* b) {
+
+
+        int row = blockIdx.y * blockDim.y + threadIdx.y;
+        int col = blockIdx.x * blockDim.x + threadIdx.x;
+
+        if(row >= height || col >= width) {
+            return;
+        }
+
+        int index = col + row * width;
+
+        if (b[index] < 0) {
+            a[index] = 0;
+        }
+    }
+
 
     __device__ float denominator;
     __global__ void softmax(const int width, const int height, const float* in, float* out) {
@@ -152,7 +169,7 @@ def backward_policy(eph, epdlogp, epx):
     # NOTE: epx can be an Nx1 matrix. When exported to CUDA, no transpose is required when shape is Nx1
     dW1 = epx.T.dot(dh)
 
-    return {'W1': dW1, 'W2': dW2}
+    return {'W1': dW1, 'W2': dW2}, dh
 
 
 # Pick highest probability action, with a certain probability of picking a different choice
@@ -302,7 +319,7 @@ def backward(eph, epdlogp, epx):
     forward_pass = mod.get_function("forward_pass")
     transpose = mod.get_function("matrix_transpose")
     softmax = mod.get_function("softmax")
-    relu = mod.get_function("relu")
+    relu_backwards = mod.get_function("relu_backwards")
 
 #    eph = eph.astype(np.float32)
 #    epdlogp = epdlogp.astype(np.float32)
@@ -409,17 +426,16 @@ def backward(eph, epdlogp, epx):
 
     # DEBUG
 #    print("Number of mistakes for dot product (dh): %d" % (np.abs(dh - np.dot(epdlogp, model['W2'].T)) > 0.001).sum())
-    #print("Number of mistakes for dot product (dh): %d" % (np.abs(dh - np.dot(epdlogp, model['W2'].T)) > 0.001).sum())
 
 
-    relu(np.int32(dh.shape[1]), np.int32(dh.shape[0]), dh_gpu, block=block, grid=grid)
+#    relu_backwards(np.int32(dh.shape[1]), np.int32(dh.shape[0]), dh_gpu, eph_gpu, block=block, grid=grid)
 
-    cuda.memcpy_dtoh(dh, dh_gpu)
+#    cuda.memcpy_dtoh(dh, dh_gpu)
 
     # DEBUG
     debug_answer = np.dot(epdlogp, model['W2'].T).astype(np.float32)
-    debug_answer[debug_answer < 0] = 0 # RELU
-    #print("Number of mistakes for RELU (dh): %d" % (np.abs(dh - debug_answer) > 0.001).sum())
+    debug_answer[eph < 0] = 0 # RELU
+#    print("Number of mistakes for RELU (dh): %d" % (np.abs(dh - debug_answer) > 0.001).sum())
 
     # --------------------
 
@@ -441,7 +457,7 @@ def backward(eph, epdlogp, epx):
     # DEBUG
     epx_T = np.zeros((epx.shape[1], epx.shape[0])).astype(np.float32)
     cuda.memcpy_dtoh(epx_T, epx_T_gpu)
-    #print("Number of mistakes for Transpose (epx): %d" % (np.abs(epx_T - epx.T) > 0.01).sum())
+#    print("Number of mistakes for Transpose (epx): %d" % (np.abs(epx_T - epx.T) > 0.01).sum())
 
 
     # --------------------
@@ -460,7 +476,7 @@ def backward(eph, epdlogp, epx):
 
     # DEBUG
     debug_answer = np.dot(epx.T, dh)
-    #print("Number of mistakes for dot product (dW1): %d" % (np.abs(dW1 - debug_answer) > 0.001).sum())
+#    print("Number of mistakes for dot product (dW1): %d" % (np.abs(dW1 - debug_answer) > 0.001).sum())
 
     return {'W1' : dW1, 'W2': dW2}, dh
 
@@ -528,6 +544,8 @@ def handle_action(action, rewards):
     rewards.append(0)
     return False
 
+import time
+start = time.time()
 for i in range(NUM_EPISODES):
     game.new_game()
 
@@ -578,11 +596,11 @@ for i in range(NUM_EPISODES):
         epdlogp *= epr
 
 
-        grad = backward_policy(eph, epdlogp, epx)
-        #grad2, dh2 = backward(eph, epdlogp, epx)
+#        grad2, dh3 = backward_policy(eph, epdlogp, epx)
+        grad, dh2 = backward(eph, epdlogp, epx)
  
 #        print((np.abs(grad['W1'] - grad2['W1']) > 0.001).sum())
-#        print((np.abs(dh - dh2) > 0.001).sum())
+#        print((np.abs(dh2 - dh3) > 0.001).sum())
 #        print((np.abs(grad['W2'] - grad2['W2']) > 0.001).sum())
 
 
@@ -634,3 +652,6 @@ for i in range(6, 11):
 print(earning)
 print(win)
 print(loss)
+end = time.time()
+print(end-start)
+
