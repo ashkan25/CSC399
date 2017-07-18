@@ -90,7 +90,7 @@ mod = SourceModule("""
     // TODO optimize using shared memory
     // https://www.shodor.org/media/content/petascale/materials/UPModules/matrixMultiplication/moduleDocument.pdf
     __global__ void forward_pass(const float* a, const float* b, float* c,
-                                const int a_width, const int b_width, const int c_width) {
+                                const int a_width, const int b_width, const int c_width, const int a_height) {
 
         float c_value = 0.0;
 
@@ -98,7 +98,7 @@ mod = SourceModule("""
         int col = blockIdx.x * blockDim.x + threadIdx.x;
 
         // TODO pass in Height of matrix A. It is a vector, so it always should be 1
-        if(row >= 1 || col >= b_width) {
+        if(row >= a_height || col >= b_width) {
             return;
         }
 
@@ -250,7 +250,7 @@ def forward():
     # print("BLOCK DIM: %s" % str(block))
     # print("GRID  DIM: %s" % str(grid))
 
-    forward_pass(input_gpu, W1_gpu, W1_out_gpu, num_inputs, num_hiddens[0], num_hiddens[0], block=block, grid=grid)
+    forward_pass(input_gpu, W1_gpu, W1_out_gpu, num_inputs, num_hiddens[0], num_hiddens[0], np.int32(1), block=block, grid=grid)
 
     # DEBUG
     # debug_answer = np.dot(input, model['W1'])
@@ -272,7 +272,7 @@ def forward():
 
     # print(grid)
     # print(block)
-    forward_pass(W1_out_gpu, W2_gpu, y_gpu, num_hiddens[0], num_outputs, num_outputs, block=block, grid=grid)
+    forward_pass(W1_out_gpu, W2_gpu, y_gpu, num_hiddens[0], num_outputs, num_outputs, np.int32(1), block=block, grid=grid)
 
     # DEBUG
     # cuda.memcpy_dtoh(y, y_gpu)
@@ -295,18 +295,9 @@ def forward():
     return predictions, W1_out
 
 
-def backward():
-    # dW2 = eph.T.dot(epdlogp)
-    #
-    # dh = epdlogp.dot(model['W2'].T)
-    # dh[eph <= 0] = 0
-    #
-    #
-    # # NOTE: epx can be an Nx1 matrix. When exported to CUDA, no transpose is required when shape is Nx1
-    # dW1 = epx.T.dot(dh)
-    #
-    # return {'W1': dW1, 'W2': dW2}
+def backward(eph, epdlogp, epx):
 
+    forward_pass = mod.get_function("forward_pass")
     transpose = mod.get_function("matrix_transpose")
     softmax = mod.get_function("softmax")
     relu = mod.get_function("relu")
@@ -319,12 +310,19 @@ def backward():
     epdlogp_gpu = cuda.mem_alloc(epdlogp.nbytes)
     epx_gpu = cuda.mem_alloc(epx.nbytes)
     eph_T_gpu = cuda.mem_alloc(eph.nbytes)
+    epx_T_gpu = cuda.mem_alloc(epx.nbytes)
+    W2_gpu = cuda.mem_alloc(model['W2'].nbytes)
+    W2_T_gpu = cuda.mem_alloc(model['W2'].nbytes)
     dW2_gpu = cuda.mem_alloc(dW2.nbytes)
+    dW1_gpu = cuda.mem_alloc(dW1.nbytes)
     dh_gpu = cuda.mem_alloc(epdlogp.shape[0] * model['W2'].shape[0] * np.float32().nbytes)
 
     cuda.memcpy_htod(eph_gpu, eph)
     cuda.memcpy_htod(epx_gpu, epx)
+    cuda.memcpy_htod(W2_gpu, model['W2'])
     cuda.memcpy_htod(epdlogp_gpu, epdlogp)
+
+    # --- eph transpose ---
 
     # DEBUG
     eph_T = np.zeros((eph.shape[1], eph.shape[0])).astype(np.float32)
@@ -335,7 +333,7 @@ def backward():
     elif eph.shape[0] < 32:
         tile_dim = eph.shape[0]
     else:
-        raise Exception("Invalid x-dim: %d. x-dim must be multiple of 32 or less than 32.", a.shape[0])
+        raise Exception("Invalid x-dim: %d. x-dim must be multiple of 32 or less than 32.", eph.shape[0])
 
     grid = (int(math.ceil(eph.shape[1] / tile_dim)), int(eph.shape[0]/tile_dim))
     block = (tile_dim, tile_dim, 1)
@@ -345,47 +343,119 @@ def backward():
 
     # DEBUG
     cuda.memcpy_dtoh(eph_T, eph_T_gpu)
-    print("Number of mistakes for Transpose (eph): %d" % (np.abs(eph_T - eph.T) > 0.001).sum())
+    #print("Number of mistakes for Transpose (eph): %d" % (np.abs(eph_T - eph.T) > 0.001).sum())
+
+
+    # --------------------
+
+    # --- Matrix multiply epdlogp and tranpose of eph
 
     block_x, block_y = 16, 16
     block = (block_x, block_y, 1)
-    grid = (int(math.ceil(eph.shape[0] / block_x)),
-            int(math.ceil(epdlogp.shape[0] / block_x)))
+    grid = (int(math.ceil(epdlogp.shape[1] / block_x)),
+            int(math.ceil(eph.shape[1] / block_x)))
 
-    # print("BLOCK DIM: %s" % str(block))
-    # print("GRID  DIM: %s" % str(grid))
+    forward_pass(eph_T_gpu, epdlogp_gpu, dW2_gpu, np.int32(eph.shape[0]), np.int32(epdlogp.shape[1]), np.int32(epdlogp.shape[1]),
+                 np.int32(eph.shape[1]), block=block, grid=grid)
+    
+    cuda.memcpy_dtoh(dW2, dW2_gpu)
 
-    forward_pass(input_gpu, W1_gpu, W1_out_gpu, num_inputs, num_hiddens[0], num_hiddens[0], block=block, grid=grid)
+    # DEBUG
+    #print("Number of mistakes for dot product (dW2): %d" % (np.abs(dW2 - np.dot(eph_T, epdlogp)) > 0.001).sum())
 
-    #x = 40000
-    #y = 30903
-    #a = []
-    #for i in range(x):
-    #    temp = []
-    #    for j in range(y):
-    #        temp.append(i * y + j)
-    #    a.append(temp)
-    #a = np.array(a).astype(np.float32)
-    #a_gpu = cuda.mem_alloc(a.nbytes)
-    #cuda.memcpy_htod(a_gpu, a)
+    # --------------------
 
-    #b = np.zeros((y, x)).astype(np.float32)
-    #b_gpu = cuda.mem_alloc(b.nbytes)
-    #cuda.memcpy_htod(b_gpu, b)
+    # --- W2 transpose ---
 
-    #print(a.shape)
 
-    #grid = (int(math.ceil(a.shape[1] / tile_dim)), 200)  # 1)
-    #block = (tile_dim, tile_dim, 1)
+    if model['W2'].shape[0] % 32 == 0:
+        tile_dim = 32
+    elif model['W2'].shape[0] < 32:
+        tile_dim = model['W2'].shape[0]
+    else:
+        raise Exception("Invalid x-dim: %d. x-dim must be multiple of 32 or less than 32.", model['W2'].shape[0])
 
-    #transpose(np.int32(a.shape[1]), np.int32(a.shape[0]), np.int32(tile_dim), a_gpu, b_gpu, block=block, grid=grid,
-    #          shared=(np.float32().nbytes * tile_dim * (tile_dim + 1)))
+    grid = (int(math.ceil(model['W2'].shape[1] / tile_dim)), int(model['W2'].shape[0]/tile_dim))
+    block = (tile_dim, tile_dim, 1)
 
-    #cuda.memcpy_dtoh(b, b_gpu)
-    #print(b)
-    #print(a)
-    #print("NUMBER OF MISTAKES: %d" % (np.abs(b - a.T) > 0.001).sum())
+    transpose(np.int32(model['W2'].shape[1]), np.int32(model['W2'].shape[0]), np.int32(tile_dim), W2_gpu, W2_T_gpu, block=block,
+              grid=grid, shared=(np.float32().nbytes * tile_dim * (tile_dim + 1)))
 
+    # DEBUG
+    W2_T = np.zeros((model['W2'].shape[1], model['W2'].shape[0])).astype(np.float32)
+    cuda.memcpy_dtoh(W2_T, W2_T_gpu)
+    #print("Number of mistakes for Transpose (W2): %d" % (np.abs(W2_T - model['W2'].T) > 0.01).sum())
+
+
+    # --------------------
+
+    # --- Matrix multiply epdlogp and W2 transpose
+
+    block_x, block_y = 16, 16
+    block = (block_x, block_y, 1)
+    grid = (int(math.ceil(model['W2'].shape[0] / block_x)),
+            int(math.ceil(epdlogp.shape[1] / block_x)))
+
+    forward_pass(epdlogp_gpu, W2_T_gpu, dh_gpu, np.int32(epdlogp.shape[1]), np.int32(model['W2'].shape[0]), np.int32(model['W2'].shape[0]),
+                 np.int32(epdlogp.shape[0]), block=block, grid=grid)
+    
+    cuda.memcpy_dtoh(dh, dh_gpu)
+
+    # DEBUG
+    #print("Number of mistakes for dot product (dh): %d" % (np.abs(dh - np.dot(epdlogp, model['W2'].T)) > 0.001).sum())
+
+
+    relu(np.int32(dh.shape[1]), np.int32(dh.shape[0]), dh_gpu, block=block, grid=grid)
+
+    cuda.memcpy_dtoh(dh, dh_gpu)
+
+    # DEBUG
+    debug_answer = np.dot(epdlogp, model['W2'].T)
+    debug_answer[debug_answer < 0] = 0 # RELU
+    #print("Number of mistakes for RELU (dW2): %d" % (np.abs(dh - debug_answer) > 0.001).sum())
+
+    # --------------------
+
+    # --- W2 transpose ---
+
+    if epx.shape[0] % 32 == 0:
+        tile_dim = 32
+    elif epx.shape[0] < 32:
+        tile_dim = epx.shape[0]
+    else:
+        raise Exception("Invalid x-dim: %d. x-dim must be multiple of 32 or less than 32.", epx.shape[0])
+
+    grid = (int(math.ceil(epx.shape[1] / tile_dim)), int(epx.shape[0]/tile_dim))
+    block = (tile_dim, tile_dim, 1)
+
+    transpose(np.int32(epx.shape[1]), np.int32(epx.shape[0]), np.int32(tile_dim), epx_gpu, epx_T_gpu, block=block,
+              grid=grid, shared=(np.float32().nbytes * tile_dim * (tile_dim + 1)))
+
+    # DEBUG
+    epx_T = np.zeros((epx.shape[1], epx.shape[0])).astype(np.float32)
+    cuda.memcpy_dtoh(epx_T, epx_T_gpu)
+    #print("Number of mistakes for Transpose (epx): %d" % (np.abs(epx_T - epx.T) > 0.01).sum())
+
+
+    # --------------------
+
+    # --- Matrix multiply epx tranpose and dh
+
+    block_x, block_y = 16, 16
+    block = (block_x, block_y, 1)
+    grid = (int(math.ceil(dh.shape[1] / block_x)),
+            int(math.ceil(epx.shape[1] / block_x)))
+
+    forward_pass(epx_T_gpu, dh_gpu, dW1_gpu, np.int32(epx.shape[0]), np.int32(dh.shape[1]), np.int32(dh.shape[1]),
+                 np.int32(epx.shape[1]), block=block, grid=grid)
+    
+    cuda.memcpy_dtoh(dW1, dW1_gpu)
+
+    # DEBUG
+    debug_answer = np.dot(epx_T, dh)
+    #print("Number of mistakes for dot product (dW1): %d" % (np.abs(dW1 - debug_answer) > 0.001).sum())
+
+    return {'W1' : dW1, 'W2': dW2}
 
 def next_round():
     # raw_input()
@@ -501,10 +571,12 @@ for i in range(NUM_EPISODES):
         epr = np.vstack(rewards)
         epdlogp *= epr
 
-        backward()
-        break
-
         grad = backward_policy(eph, epdlogp, epx)
+        grad2 = backward(eph, epdlogp, epx)
+ 
+#        print((np.abs(grad['W1'] - grad2['W1']) > 0.001).sum())
+        print((np.abs(grad['W2'] - grad2['W2']) > 0.001).sum())
+
 
         # TODO Check if it is worth it to do operation in parallel. 2 Matrices is 500x4, approx 40x40 matrix. Input size will get larger in the future
         for k in model:
