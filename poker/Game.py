@@ -41,6 +41,9 @@ class Game:
     def get_input(self):
         return np.concatenate((self._bot1.get_hand(), self._bet_input, self._round_input)).astype(np.float32) 
 
+    def get_input_P2(self):
+        return np.concatenate((self._bot2.get_hand(), self._bet_input, self._round_input)).astype(np.float32)
+
     def next_round(self):
 
         if self._round == Constants.FLOP:
@@ -107,7 +110,6 @@ class Game:
         return self._bot2.get_lookup_table_hand()
 
     def bot_decision(self, can_raise=True):
-
         # Remove raise as an option if bot cannot raise (Case when someone already raised)
         if can_raise:
             probs = self._bot_cumsum_prob
@@ -119,6 +121,7 @@ class Game:
         for i, v in enumerate(probs):
             if r < v:
                 return i
+        return i
 
 # lookup_table = array.array('i')
 # f = open("HandRanks.dat", "rb")

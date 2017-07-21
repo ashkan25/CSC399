@@ -587,7 +587,8 @@ for i in range(NUM_EPISODES):
 
     # Cannot be done on GPU, order must be preserved
 
-    if i % 100 == 0:
+    if i > 0 and i % 1000 == 0:
+
 
         epx = np.vstack(xs)
         eph = np.vstack(hs)
@@ -604,12 +605,11 @@ for i in range(NUM_EPISODES):
 #        print((np.abs(grad['W2'] - grad2['W2']) > 0.001).sum())
 
 
-        # TODO Check if it is worth it to do operation in parallel. 2 Matrices is 500x4, approx 40x40 matrix. Input size will get larger in the future
         for k in model:
             # accumulate grad over batch
             grad_buffer[k] += grad[k]
 
-        if i % 1000 == 0:
+        if i % 2000 == 0:
             for k, v in model.iteritems():
                 g = grad_buffer[k]  # gradient
 
@@ -625,7 +625,7 @@ for i in range(NUM_EPISODES):
                 #    if i%10 == 0:
                 #        print(rewards)
 
-    if (i > 0 and i % 2000 == 0):
+    if i > 0 and i % 2000 == 0:
         x = np.array(reward_count)
         unique, counts = np.unique(x, return_counts=True)
         values = np.asarray((unique, counts)).T
