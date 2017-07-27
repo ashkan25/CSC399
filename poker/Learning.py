@@ -12,6 +12,7 @@ import math
 # TODO Make sure you handle when matrix is bigger than NUM_BLOCKS*NUM_THREADS
 mod = SourceModule("""
 #include <stdio.h>
+#define TILE_DIM 32
 
 #define CUDA_KERNEL_LOOP(i, n) \
  for (int i = blockIdx.x * blockDim.x + threadIdx.x; i < (n); i += blockDim.x * gridDim.x)
@@ -117,6 +118,42 @@ mod = SourceModule("""
 
     }
 
+__global__ void multiply(float* A, float* B, float* C, int ARows, int ACols, int BRows,
+    int BCols, int CRows, int CCols)
+{
+    float CValue = 0;
+
+    int Row = blockIdx.y*TILE_DIM + threadIdx.y;
+    int Col = blockIdx.x*TILE_DIM + threadIdx.x;
+
+    __shared__ float As[TILE_DIM][TILE_DIM];
+    __shared__ float Bs[TILE_DIM][TILE_DIM];
+
+    for (int k = 0; k < (TILE_DIM + ACols - 1)/TILE_DIM; k++) {
+
+         if (k*TILE_DIM + threadIdx.x < ACols && Row < ARows)
+             As[threadIdx.y][threadIdx.x] = A[Row*ACols + k*TILE_DIM + threadIdx.x];
+         else
+             As[threadIdx.y][threadIdx.x] = 0.0;
+
+         if (k*TILE_DIM + threadIdx.y < BRows && Col < BCols)
+             Bs[threadIdx.y][threadIdx.x] = B[(k*TILE_DIM + threadIdx.y)*BCols + Col];
+         else
+             Bs[threadIdx.y][threadIdx.x] = 0.0;
+
+         __syncthreads();
+
+         for (int n = 0; n < TILE_DIM; ++n)
+             CValue += As[threadIdx.y][n] * Bs[n][threadIdx.x];
+
+         __syncthreads();
+    }
+
+    if (Row < CRows && Col < CCols)
+        C[((blockIdx.y * blockDim.y + threadIdx.y)*CCols) +
+           (blockIdx.x * blockDim.x)+ threadIdx.x] = CValue;
+}
+
   """)
 
 
@@ -221,6 +258,7 @@ def forward():
 
 
     forward_pass = mod.get_function("forward_pass")
+    multiply = mod.get_function("multiply")
     softmax = mod.get_function("softmax")
     relu = mod.get_function("relu")
 
@@ -246,42 +284,52 @@ def forward():
     cuda.memcpy_htod(y_gpu, y)
     cuda.memcpy_htod(predictions_gpu, predictions)
 
-    block_x, block_y = 16, 16
+    block_x, block_y = 32, 32
     block = (block_x, block_y, 1)
     grid = (int(math.ceil(model['W1'].shape[1] / block_x)),
             int(math.ceil(input.shape[0] / block_x)))
 
-    # print("BLOCK DIM: %s" % str(block))
-    # print("GRID  DIM: %s" % str(grid))
+    print("BLOCK DIM: %s" % str(block))
+    print("GRID  DIM: %s" % str(grid))
 
-    forward_pass(input_gpu, W1_gpu, W1_out_gpu, num_inputs, num_hiddens[0], num_hiddens[0], np.int32(1), block=block, grid=grid)
+#    forward_pass(input_gpu, W1_gpu, W1_out_gpu, num_inputs, num_hiddens[0], num_hiddens[0], np.int32(1), block=block, grid=grid)
+    multiply(input_gpu, W1_gpu, W1_out_gpu, np.int32(1), np.int32(input.shape[0]), np.int32(model['W1'].shape[0]),
+             np.int32(model['W1'].shape[1]), np.int32(W1_out.shape[0]), np.int32(W1_out.shape[1]), block=block, grid=grid)
 
-    # DEBUG
-    # debug_answer = np.dot(input, model['W1'])
-    # cuda.memcpy_dtoh(W1_out, W1_out_gpu) # TODO REMOVE IF NOT DEBUG
-    # print("Number of mistakes for matrix multiply (Hidden 1): %d" % (np.abs(W1_out - debug_answer) > 0.001).sum())
+    # DEBUG 
+    debug_answer = np.dot(input, model['W1'])
+    cuda.memcpy_dtoh(W1_out, W1_out_gpu)
+    print("Number of mistakes for matrix multiply (Hidden 1): %d" % (np.abs(W1_out - debug_answer) > 0.001).sum())
 
     relu(num_hiddens[0], np.int32(1), W1_out_gpu, block=block, grid=grid)
 
     cuda.memcpy_dtoh(W1_out, W1_out_gpu)
 
     # DEBUG
-    # debug_answer[debug_answer < 0] = 0 # RELU
-    # print("Number of mistakes for RELU (Hidden 1): %d" % (np.abs(W1_out - debug_answer) > 0.001).sum())
+    debug_answer[debug_answer < 0] = 0 # RELU
+    print("Number of mistakes for RELU (Hidden 1): %d" % (np.abs(W1_out - debug_answer) > 0.001).sum())
 
     block_x, block_y = 16, 16
     block = (block_x, block_y, 1)
     grid = (int(math.ceil(model['W2'].shape[1] / block_x)),
-            int(math.ceil(W1_out.shape[1] / block_x)))
+            int(math.ceil(W1_out.shape[0] / block_x)))
 
-    # print(grid)
-    # print(block)
-    forward_pass(W1_out_gpu, W2_gpu, y_gpu, num_hiddens[0], num_outputs, num_outputs, np.int32(1), block=block, grid=grid)
+    print(W1_out.shape)
+    print(model['W2'].shape)
+    print(grid)
+    print(block)
+    #forward_pass(W1_out_gpu, W2_gpu, y_gpu, num_hiddens[0], num_outputs, num_outputs, np.int32(1), block=block, grid=grid)
+    multiply(W1_out_gpu, W2_gpu, y_gpu, np.int32(W1_out.shape[0]), np.int32(W1_out.shape[1]), np.int32(model['W2'].shape[0]), np.int32(model['W2'].shape[1]),
+             np.int32(y.shape[0]), np.int32(y.shape[1]), block=block, grid=grid)
 
     # DEBUG
-    # cuda.memcpy_dtoh(y, y_gpu)
-    # debug_answer = np.dot(debug_answer, model['W2'])
-    # print("Number of mistakes for matrix multiply (Output): %d" % (np.abs(y - debug_answer) > 0.001).sum())
+    cuda.memcpy_dtoh(y, y_gpu)
+    print(debug_answer.shape)
+    print(W1_out.shape)
+    debug_answer = np.dot(debug_answer, model['W2'])
+    print("Number of mistakes for matrix multiply (Output): %d" % (np.abs(y - debug_answer) > 0.001).sum())
+    print(debug_answer)
+    print(y)
 
     # Work around for denominator that needs to be reset for each round
     denom = np.array([0]).astype(np.float32)
