@@ -69,39 +69,24 @@ mod = SourceModule("""
 
     }
     
-    #define TILE_DIM 32
-    #define BLOCK_ROWS 8
-    __global__ void matrix_transpose(int width, int height, int tile_dim, float *in, float *out) {
-        extern __shared__ float tile[];
+    __global__ void transpose(float *odata, const float *idata,
+        const int width, const int height)
+    {
+        __shared__ float tile[32][33];
+        int x = blockIdx.x * 32 + threadIdx.x;
+        int y = blockIdx.y * 32 + threadIdx.y;
 
-        int blockIdx_x, blockIdx_y;
-
-        // do diagonal reordering
-        if (width == height) {
-            blockIdx_y = blockIdx.x;
-            blockIdx_x = (blockIdx.x+blockIdx.y)%gridDim.x;
-        } else {
-            int bid = blockIdx.x + gridDim.x*blockIdx.y;
-            blockIdx_y = bid%gridDim.y;
-            blockIdx_x = ((bid/gridDim.y)+blockIdx_y)%gridDim.x;
-        }
-
-        int xIndex = blockIdx_x * tile_dim + threadIdx.x;
-        int yIndex = blockIdx_y * tile_dim + threadIdx.y;
-        int index_in = xIndex + (yIndex)*width;
-
-        xIndex = blockIdx_y * tile_dim + threadIdx.x;
-        yIndex = blockIdx_x * tile_dim + threadIdx.y;
-        int index_out = xIndex + (yIndex)*height;
-
-        for (int i=0; i<tile_dim; i+=tile_dim) {
-          tile[(threadIdx.y+i)*tile_dim +threadIdx.x] = in[index_in+i*width];
+        if (x < width && y < height) {
+            tile[threadIdx.y][threadIdx.x] = idata[y*width + x];
         }
 
         __syncthreads();
 
-        for (int i=0; i<tile_dim; i+=tile_dim) {
-            out[index_out+i*height] = tile[(threadIdx.x*tile_dim) + threadIdx.y+i];
+        x = blockIdx.y * 32 + threadIdx.x; // transpose block offset
+        y = blockIdx.x * 32 + threadIdx.y;
+
+        if (y < width && x < height) {
+            odata[y*height + x] = tile[threadIdx.x][threadIdx.y];
         }
     }
 
@@ -317,7 +302,7 @@ def forward():
 def backward(eph, epdlogp, epx):
 
     forward_pass = mod.get_function("forward_pass")
-    transpose = mod.get_function("matrix_transpose")
+    transpose = mod.get_function("transpose")
     softmax = mod.get_function("softmax")
     relu_backwards = mod.get_function("relu_backwards")
 
@@ -351,27 +336,23 @@ def backward(eph, epdlogp, epx):
     eph_T = np.zeros((eph.shape[1], eph.shape[0])).astype(np.float32)
     dh = np.zeros((epdlogp.shape[0], model['W2'].shape[0])).astype(np.float32)
 
-    if eph.shape[0] % 32 == 0:
-        tile_dim = 32
-    elif eph.shape[0] < 32:
-        tile_dim = eph.shape[0]
-    else:
-        raise Exception("Invalid x-dim: %d. x-dim must be multiple of 32 or less than 32.", eph.shape[0])
+    block_x, block_y = 32, 32
+    block = (block_x, block_y, 1)
+    grid = (int(math.ceil(eph.shape[1] / block_x)), int(math.ceil(eph.shape[0]/block_y)))
 
-    grid = (int(math.ceil(eph.shape[1] / tile_dim)), int(eph.shape[0]/tile_dim))
-    block = (tile_dim, tile_dim, 1)
-
-    transpose(np.int32(eph.shape[1]), np.int32(eph.shape[0]), np.int32(tile_dim), eph_gpu, eph_T_gpu, block=block,
-              grid=grid, shared=(np.float32().nbytes * tile_dim * (tile_dim + 1)))
+    print(eph.shape)
+    print(grid)
+    print(block)
+    transpose(eph_T_gpu, eph_gpu, np.int32(eph.shape[1]), np.int32(eph.shape[0]), block=block, grid=grid)
 
     # DEBUG
     cuda.memcpy_dtoh(eph_T, eph_T_gpu)
-    #print("Number of mistakes for Transpose (eph): %d" % (np.abs(eph_T - eph.T) > 0.001).sum())
+    print("Number of mistakes for Transpose (eph): %d" % (np.abs(eph_T - eph.T) > 0.001).sum())
 
 
     # --------------------
 
-    # --- Matrix multiply epdlogp and tranpose of eph
+    # --- Matrix multiply epdlogp and transpose of eph
 
     block_x, block_y = 16, 16
     block = (block_x, block_y, 1)
@@ -390,24 +371,16 @@ def backward(eph, epdlogp, epx):
 
     # --- W2 transpose ---
 
+    block_x, block_y = 32, 32
+    block = (block_x, block_y, 1)
+    grid = (int(math.ceil(model['W2'].shape[1] / block_x)), int(math.ceil(model['W2'].shape[0]/block_y)))
 
-    if model['W2'].shape[0] % 32 == 0:
-        tile_dim = 32
-    elif model['W2'].shape[0] < 32:
-        tile_dim = model['W2'].shape[0]
-    else:
-        raise Exception("Invalid x-dim: %d. x-dim must be multiple of 32 or less than 32.", model['W2'].shape[0])
-
-    grid = (int(math.ceil(model['W2'].shape[1] / tile_dim)), int(model['W2'].shape[0]/tile_dim))
-    block = (tile_dim, tile_dim, 1)
-
-    transpose(np.int32(model['W2'].shape[1]), np.int32(model['W2'].shape[0]), np.int32(tile_dim), W2_gpu, W2_T_gpu, block=block,
-              grid=grid, shared=(np.float32().nbytes * tile_dim * (tile_dim + 1)))
+    transpose(W2_T_gpu, W2_gpu, np.int32(model['W2'].shape[1]), np.int32(model['W2'].shape[0]), block=block, grid=grid)
 
     # DEBUG
     W2_T = np.zeros((model['W2'].shape[1], model['W2'].shape[0])).astype(np.float32)
     cuda.memcpy_dtoh(W2_T, W2_T_gpu)
-    #print("Number of mistakes for Transpose (W2): %d" % (np.abs(W2_T - model['W2'].T) > 0.01).sum())
+    print("Number of mistakes for Transpose (W2): %d" % (np.abs(W2_T - model['W2'].T) > 0.01).sum())
 
 
     # --------------------
@@ -441,28 +414,22 @@ def backward(eph, epdlogp, epx):
 
     # --- W2 transpose ---
 
-    if epx.shape[0] % 32 == 0:
-        tile_dim = 32
-    elif epx.shape[0] < 32:
-        tile_dim = epx.shape[0]
-    else:
-        raise Exception("Invalid x-dim: %d. x-dim must be multiple of 32 or less than 32.", epx.shape[0])
+    block_x, block_y = 32, 32
+    block = (block_x, block_y, 1)
+    grid = (int(math.ceil(epx.shape[1] / block_x)), int(math.ceil(epx.shape[0]/block_y)))
 
-    grid = (int(math.ceil(epx.shape[1] / tile_dim)), int(epx.shape[0]/tile_dim))
-    block = (tile_dim, tile_dim, 1)
+    transpose(epx_T_gpu, epx_gpu, np.int32(epx.shape[1]), np.int32(epx.shape[0]), block=block, grid=grid)
 
-    transpose(np.int32(epx.shape[1]), np.int32(epx.shape[0]), np.int32(tile_dim), epx_gpu, epx_T_gpu, block=block,
-              grid=grid, shared=(np.float32().nbytes * tile_dim * (tile_dim + 1)))
 
     # DEBUG
     epx_T = np.zeros((epx.shape[1], epx.shape[0])).astype(np.float32)
     cuda.memcpy_dtoh(epx_T, epx_T_gpu)
-#    print("Number of mistakes for Transpose (epx): %d" % (np.abs(epx_T - epx.T) > 0.01).sum())
+    print("Number of mistakes for Transpose (epx): %d" % (np.abs(epx_T - epx.T) > 0.01).sum())
 
 
     # --------------------
 
-    # --- Matrix multiply epx tranpose and dh
+    # --- Matrix multiply epx transpose and dh
 
     block_x, block_y = 16, 16
     block = (block_x, block_y, 1)
@@ -546,10 +513,9 @@ def handle_action(action, rewards):
 
 import time
 start = time.time()
+xs, hs, dlogps, rewards = [], [], [], []
 for i in range(NUM_EPISODES):
     game.new_game()
-
-    xs, hs, dlogps, rewards = [], [], [], []
 
     for _ in range(3):
 
@@ -573,7 +539,6 @@ for i in range(NUM_EPISODES):
 
         rewards.append(reward * game.get_num_bets())  # +1 / -1 depending on who wins. 0 for tie
 
-    rewards = discount_rewards(rewards)
     # print(rewards)
 
     # DEBUG
@@ -587,8 +552,8 @@ for i in range(NUM_EPISODES):
 
     # Cannot be done on GPU, order must be preserved
 
-    if i > 0 and i % 1000 == 0:
-
+    if i > 0 and i % 100 == 0:
+        rewards = discount_rewards(rewards)
 
         epx = np.vstack(xs)
         eph = np.vstack(hs)
@@ -609,7 +574,7 @@ for i in range(NUM_EPISODES):
             # accumulate grad over batch
             grad_buffer[k] += grad[k]
 
-        if i % 2000 == 0:
+        if i % 200 == 0:
             for k, v in model.iteritems():
                 g = grad_buffer[k]  # gradient
 
@@ -625,7 +590,9 @@ for i in range(NUM_EPISODES):
                 #    if i%10 == 0:
                 #        print(rewards)
 
-    if i > 0 and i % 2000 == 0:
+        xs, hs, dlogps, rewards = [], [], [], []
+
+    if i > 0 and i % 200 == 0:
         x = np.array(reward_count)
         unique, counts = np.unique(x, return_counts=True)
         values = np.asarray((unique, counts)).T
