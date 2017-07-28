@@ -281,55 +281,46 @@ def forward():
     cuda.memcpy_htod(input_gpu, input)
     cuda.memcpy_htod(W1_gpu, model['W1'])
     cuda.memcpy_htod(W2_gpu, model['W2'])
-    cuda.memcpy_htod(y_gpu, y)
-    cuda.memcpy_htod(predictions_gpu, predictions)
+    #cuda.memcpy_htod(y_gpu, y)
+    #cuda.memcpy_htod(predictions_gpu, predictions)
 
     block_x, block_y = 32, 32
     block = (block_x, block_y, 1)
     grid = (int(math.ceil(model['W1'].shape[1] / block_x)),
             int(math.ceil(input.shape[0] / block_x)))
 
-    print("BLOCK DIM: %s" % str(block))
-    print("GRID  DIM: %s" % str(grid))
+    # print("BLOCK DIM: %s" % str(block))
+    # print("GRID  DIM: %s" % str(grid))
 
 #    forward_pass(input_gpu, W1_gpu, W1_out_gpu, num_inputs, num_hiddens[0], num_hiddens[0], np.int32(1), block=block, grid=grid)
     multiply(input_gpu, W1_gpu, W1_out_gpu, np.int32(1), np.int32(input.shape[0]), np.int32(model['W1'].shape[0]),
              np.int32(model['W1'].shape[1]), np.int32(W1_out.shape[0]), np.int32(W1_out.shape[1]), block=block, grid=grid)
 
     # DEBUG 
-    debug_answer = np.dot(input, model['W1'])
-    cuda.memcpy_dtoh(W1_out, W1_out_gpu)
-    print("Number of mistakes for matrix multiply (Hidden 1): %d" % (np.abs(W1_out - debug_answer) > 0.001).sum())
+    # debug_answer = np.dot(input, model['W1'])
+    # cuda.memcpy_dtoh(W1_out, W1_out_gpu)
+    # print("Number of mistakes for matrix multiply (Hidden 1): %d" % (np.abs(W1_out - debug_answer) > 0.001).sum())
 
     relu(num_hiddens[0], np.int32(1), W1_out_gpu, block=block, grid=grid)
 
     cuda.memcpy_dtoh(W1_out, W1_out_gpu)
 
     # DEBUG
-    debug_answer[debug_answer < 0] = 0 # RELU
-    print("Number of mistakes for RELU (Hidden 1): %d" % (np.abs(W1_out - debug_answer) > 0.001).sum())
+    # debug_answer[debug_answer < 0] = 0 # RELU
+    # print("Number of mistakes for RELU (Hidden 1): %d" % (np.abs(W1_out - debug_answer) > 0.001).sum())
 
-    block_x, block_y = 16, 16
+    block_x, block_y = 32, 32
     block = (block_x, block_y, 1)
     grid = (int(math.ceil(model['W2'].shape[1] / block_x)),
             int(math.ceil(W1_out.shape[0] / block_x)))
 
-    print(W1_out.shape)
-    print(model['W2'].shape)
-    print(grid)
-    print(block)
-    #forward_pass(W1_out_gpu, W2_gpu, y_gpu, num_hiddens[0], num_outputs, num_outputs, np.int32(1), block=block, grid=grid)
     multiply(W1_out_gpu, W2_gpu, y_gpu, np.int32(W1_out.shape[0]), np.int32(W1_out.shape[1]), np.int32(model['W2'].shape[0]), np.int32(model['W2'].shape[1]),
              np.int32(y.shape[0]), np.int32(y.shape[1]), block=block, grid=grid)
 
     # DEBUG
-    cuda.memcpy_dtoh(y, y_gpu)
-    print(debug_answer.shape)
-    print(W1_out.shape)
-    debug_answer = np.dot(debug_answer, model['W2'])
-    print("Number of mistakes for matrix multiply (Output): %d" % (np.abs(y - debug_answer) > 0.001).sum())
-    print(debug_answer)
-    print(y)
+    # cuda.memcpy_dtoh(y, y_gpu)
+    # debug_answer = np.dot(debug_answer, model['W2'])
+    # print("Number of mistakes for matrix multiply (Output): %d" % (np.abs(y - debug_answer) > 0.001).sum())
 
     # Work around for denominator that needs to be reset for each round
     denom = np.array([0]).astype(np.float32)
@@ -350,6 +341,7 @@ def forward():
 def backward(eph, epdlogp, epx):
 
     forward_pass = mod.get_function("forward_pass")
+    multiply = mod.get_function("multiply")
     transpose = mod.get_function("transpose")
     softmax = mod.get_function("softmax")
     relu_backwards = mod.get_function("relu_backwards")
@@ -381,39 +373,39 @@ def backward(eph, epdlogp, epx):
     # --- eph transpose ---
 
     # DEBUG
-    eph_T = np.zeros((eph.shape[1], eph.shape[0])).astype(np.float32)
+    # eph_T = np.zeros((eph.shape[1], eph.shape[0])).astype(np.float32)
     dh = np.zeros((epdlogp.shape[0], model['W2'].shape[0])).astype(np.float32)
 
     block_x, block_y = 32, 32
     block = (block_x, block_y, 1)
     grid = (int(math.ceil(eph.shape[1] / block_x)), int(math.ceil(eph.shape[0]/block_y)))
 
-    print(eph.shape)
-    print(grid)
-    print(block)
     transpose(eph_T_gpu, eph_gpu, np.int32(eph.shape[1]), np.int32(eph.shape[0]), block=block, grid=grid)
 
     # DEBUG
-    cuda.memcpy_dtoh(eph_T, eph_T_gpu)
-    print("Number of mistakes for Transpose (eph): %d" % (np.abs(eph_T - eph.T) > 0.001).sum())
+    # cuda.memcpy_dtoh(eph_T, eph_T_gpu)
+    # print("Number of mistakes for Transpose (eph): %d" % (np.abs(eph_T - eph.T) > 0.001).sum())
 
 
     # --------------------
 
     # --- Matrix multiply epdlogp and transpose of eph
 
-    block_x, block_y = 16, 16
+    block_x, block_y = 32, 32
     block = (block_x, block_y, 1)
     grid = (int(math.ceil(epdlogp.shape[1] / block_x)),
             int(math.ceil(eph.shape[1] / block_x)))
 
-    forward_pass(eph_T_gpu, epdlogp_gpu, dW2_gpu, np.int32(eph.shape[0]), np.int32(epdlogp.shape[1]), np.int32(epdlogp.shape[1]),
-                 np.int32(eph.shape[1]), block=block, grid=grid)
-    
+
+    #forward_pass(eph_T_gpu, epdlogp_gpu, dW2_gpu, np.int32(eph.shape[0]), np.int32(epdlogp.shape[1]), np.int32(epdlogp.shape[1]),
+    #             np.int32(eph.shape[1]), block=block, grid=grid)
+    multiply(eph_T_gpu, epdlogp_gpu, dW2_gpu, np.int32(eph.shape[1]), np.int32(eph.shape[0]), np.int32(epdlogp.shape[0]),
+             np.int32(epdlogp.shape[1]), np.int32(dW2.shape[0]), np.int32(dW2.shape[1]), block=block, grid=grid)
+
     cuda.memcpy_dtoh(dW2, dW2_gpu)
 
     # DEBUG
-    #print("Number of mistakes for dot product (dW2): %d" % (np.abs(dW2 - np.dot(eph_T, epdlogp)) > 0.001).sum())
+    # print("Number of mistakes for dot product (dW2): %d" % (np.abs(dW2 - np.dot(eph_T, epdlogp)) > 0.001).sum())
 
     # --------------------
 
@@ -426,37 +418,39 @@ def backward(eph, epdlogp, epx):
     transpose(W2_T_gpu, W2_gpu, np.int32(model['W2'].shape[1]), np.int32(model['W2'].shape[0]), block=block, grid=grid)
 
     # DEBUG
-    W2_T = np.zeros((model['W2'].shape[1], model['W2'].shape[0])).astype(np.float32)
-    cuda.memcpy_dtoh(W2_T, W2_T_gpu)
-    print("Number of mistakes for Transpose (W2): %d" % (np.abs(W2_T - model['W2'].T) > 0.01).sum())
+    # W2_T = np.zeros((model['W2'].shape[1], model['W2'].shape[0])).astype(np.float32)
+    # cuda.memcpy_dtoh(W2_T, W2_T_gpu)
+    # print("Number of mistakes for Transpose (W2): %d" % (np.abs(W2_T - model['W2'].T) > 0.01).sum())
 
 
     # --------------------
 
     # --- Matrix multiply epdlogp and W2 transpose ---
 
-    block_x, block_y = 16, 16
+    block_x, block_y = 32, 32
     block = (block_x, block_y, 1)
     grid = (int(math.ceil(model['W2'].shape[0] / block_x)),
-            int(math.ceil(epdlogp.shape[1] / block_x)))
+            int(math.ceil(epdlogp.shape[0] / block_x)))
 
-    forward_pass(epdlogp_gpu, W2_T_gpu, dh_gpu, np.int32(epdlogp.shape[1]), np.int32(model['W2'].shape[0]), np.int32(model['W2'].shape[0]),
-                 np.int32(epdlogp.shape[0]), block=block, grid=grid)
+#    forward_pass(epdlogp_gpu, W2_T_gpu, dh_gpu, np.int32(epdlogp.shape[1]), np.int32(model['W2'].shape[0]), np.int32(model['W2'].shape[0]),
+#                 np.int32(epdlogp.shape[0]), block=block, grid=grid)
     
+    multiply(epdlogp_gpu, W2_T_gpu, dh_gpu, np.int32(epdlogp.shape[0]), np.int32(epdlogp.shape[1]), np.int32(model['W2'].shape[1]),
+             np.int32(model['W2'].shape[0]), np.int32(dh.shape[0]), np.int32(dh.shape[1]), block=block, grid=grid)
+
     cuda.memcpy_dtoh(dh, dh_gpu)
 
     # DEBUG
-#    print("Number of mistakes for dot product (dh): %d" % (np.abs(dh - np.dot(epdlogp, model['W2'].T)) > 0.001).sum())
+    # print("Number of mistakes for dot product (dh): %d" % (np.abs(dh - np.dot(epdlogp, model['W2'].T)) > 0.001).sum())
 
+    relu_backwards(np.int32(dh.shape[1]), np.int32(dh.shape[0]), dh_gpu, eph_gpu, block=block, grid=grid)
 
-#    relu_backwards(np.int32(dh.shape[1]), np.int32(dh.shape[0]), dh_gpu, eph_gpu, block=block, grid=grid)
-
-#    cuda.memcpy_dtoh(dh, dh_gpu)
+    cuda.memcpy_dtoh(dh, dh_gpu)
 
     # DEBUG
-    debug_answer = np.dot(epdlogp, model['W2'].T).astype(np.float32)
-    debug_answer[eph < 0] = 0 # RELU
-#    print("Number of mistakes for RELU (dh): %d" % (np.abs(dh - debug_answer) > 0.001).sum())
+    # debug_answer = np.dot(epdlogp, model['W2'].T).astype(np.float32)
+    # debug_answer[eph < 0] = 0 # RELU
+    # print("Number of mistakes for RELU (dh): %d" % (np.abs(dh - debug_answer) > 0.001).sum())
 
     # --------------------
 
@@ -470,28 +464,32 @@ def backward(eph, epdlogp, epx):
 
 
     # DEBUG
-    epx_T = np.zeros((epx.shape[1], epx.shape[0])).astype(np.float32)
-    cuda.memcpy_dtoh(epx_T, epx_T_gpu)
-    print("Number of mistakes for Transpose (epx): %d" % (np.abs(epx_T - epx.T) > 0.01).sum())
+    # epx_T = np.zeros((epx.shape[1], epx.shape[0])).astype(np.float32)
+    # cuda.memcpy_dtoh(epx_T, epx_T_gpu)
+    # print("Number of mistakes for Transpose (epx): %d" % (np.abs(epx_T - epx.T) > 0.01).sum())
 
 
     # --------------------
 
     # --- Matrix multiply epx transpose and dh
 
-    block_x, block_y = 16, 16
+    block_x, block_y = 32, 32
     block = (block_x, block_y, 1)
     grid = (int(math.ceil(dh.shape[1] / block_x)),
             int(math.ceil(epx.shape[1] / block_x)))
 
     forward_pass(epx_T_gpu, dh_gpu, dW1_gpu, np.int32(epx.shape[0]), np.int32(dh.shape[1]), np.int32(dh.shape[1]),
                  np.int32(epx.shape[1]), block=block, grid=grid)
+
+    multiply(epx_T_gpu, dh_gpu, dW1_gpu, np.int32(epx.shape[1]), np.int32(epx.shape[0]), np.int32(dh.shape[0]),
+             np.int32(dh.shape[1]), np.int32(dW1.shape[0]), np.int32(dW1.shape[1]), block=block, grid=grid)
+
     
     cuda.memcpy_dtoh(dW1, dW1_gpu)
 
     # DEBUG
-    debug_answer = np.dot(epx.T, dh)
-#    print("Number of mistakes for dot product (dW1): %d" % (np.abs(dW1 - debug_answer) > 0.001).sum())
+    # debug_answer = np.dot(epx.T, dh)
+    # print("Number of mistakes for dot product (dW1): %d" % (np.abs(dW1 - debug_answer) > 0.001).sum())
 
     return {'W1' : dW1, 'W2': dW2}, dh
 
@@ -622,7 +620,7 @@ for i in range(NUM_EPISODES):
             # accumulate grad over batch
             grad_buffer[k] += grad[k]
 
-        if i % 200 == 0:
+        if i % 2000 == 0:
             for k, v in model.iteritems():
                 g = grad_buffer[k]  # gradient
 
@@ -640,7 +638,7 @@ for i in range(NUM_EPISODES):
 
         xs, hs, dlogps, rewards = [], [], [], []
 
-    if i > 0 and i % 200 == 0:
+    if i > 0 and i % 100 == 0:
         x = np.array(reward_count)
         unique, counts = np.unique(x, return_counts=True)
         values = np.asarray((unique, counts)).T
