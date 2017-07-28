@@ -91,33 +91,6 @@ mod = SourceModule("""
         }
     }
 
-    // TODO optimize using shared memory
-    // https://www.shodor.org/media/content/petascale/materials/UPModules/matrixMultiplication/moduleDocument.pdf
-    __global__ void forward_pass(const float* a, const float* b, float* c,
-                                const int a_width, const int b_width, const int c_width, const int a_height) {
-
-        float c_value = 0.0;
-
-        int row = blockIdx.y * blockDim.y + threadIdx.y;
-        int col = blockIdx.x * blockDim.x + threadIdx.x;
-
-        // TODO pass in Height of matrix A. It is a vector, so it always should be 1
-        if(row >= a_height || col >= b_width) {
-            return;
-        }
-
-        for (int i = 0; i < a_width; i++) {
-            c_value += (a[row * a_width + i]) * (b[i * b_width + col]);
-        }
-
-        c[row*c_width+col] = c_value;
-
-        // TODO It might be better to export ReLU to another kernel since it is not needed for the final hidden layer
-        // ReLU function: max(x, 0)
-        //c[row * c_width + col] = c_value > 0 ? c_value  : 0;
-
-    }
-
 __global__ void multiply(float* A, float* B, float* C, int ARows, int ACols, int BRows,
     int BCols, int CRows, int CCols)
 {
@@ -257,7 +230,6 @@ def forward():
     # print(input.shape)
 
 
-    forward_pass = mod.get_function("forward_pass")
     multiply = mod.get_function("multiply")
     softmax = mod.get_function("softmax")
     relu = mod.get_function("relu")
@@ -292,7 +264,6 @@ def forward():
     # print("BLOCK DIM: %s" % str(block))
     # print("GRID  DIM: %s" % str(grid))
 
-#    forward_pass(input_gpu, W1_gpu, W1_out_gpu, num_inputs, num_hiddens[0], num_hiddens[0], np.int32(1), block=block, grid=grid)
     multiply(input_gpu, W1_gpu, W1_out_gpu, np.int32(1), np.int32(input.shape[0]), np.int32(model['W1'].shape[0]),
              np.int32(model['W1'].shape[1]), np.int32(W1_out.shape[0]), np.int32(W1_out.shape[1]), block=block, grid=grid)
 
@@ -340,7 +311,6 @@ def forward():
 
 def backward(eph, epdlogp, epx):
 
-    forward_pass = mod.get_function("forward_pass")
     multiply = mod.get_function("multiply")
     transpose = mod.get_function("transpose")
     softmax = mod.get_function("softmax")
@@ -397,8 +367,6 @@ def backward(eph, epdlogp, epx):
             int(math.ceil(eph.shape[1] / block_x)))
 
 
-    #forward_pass(eph_T_gpu, epdlogp_gpu, dW2_gpu, np.int32(eph.shape[0]), np.int32(epdlogp.shape[1]), np.int32(epdlogp.shape[1]),
-    #             np.int32(eph.shape[1]), block=block, grid=grid)
     multiply(eph_T_gpu, epdlogp_gpu, dW2_gpu, np.int32(eph.shape[1]), np.int32(eph.shape[0]), np.int32(epdlogp.shape[0]),
              np.int32(epdlogp.shape[1]), np.int32(dW2.shape[0]), np.int32(dW2.shape[1]), block=block, grid=grid)
 
@@ -432,8 +400,6 @@ def backward(eph, epdlogp, epx):
     grid = (int(math.ceil(model['W2'].shape[0] / block_x)),
             int(math.ceil(epdlogp.shape[0] / block_x)))
 
-#    forward_pass(epdlogp_gpu, W2_T_gpu, dh_gpu, np.int32(epdlogp.shape[1]), np.int32(model['W2'].shape[0]), np.int32(model['W2'].shape[0]),
-#                 np.int32(epdlogp.shape[0]), block=block, grid=grid)
     
     multiply(epdlogp_gpu, W2_T_gpu, dh_gpu, np.int32(epdlogp.shape[0]), np.int32(epdlogp.shape[1]), np.int32(model['W2'].shape[1]),
              np.int32(model['W2'].shape[0]), np.int32(dh.shape[0]), np.int32(dh.shape[1]), block=block, grid=grid)
@@ -477,9 +443,6 @@ def backward(eph, epdlogp, epx):
     block = (block_x, block_y, 1)
     grid = (int(math.ceil(dh.shape[1] / block_x)),
             int(math.ceil(epx.shape[1] / block_x)))
-
-    forward_pass(epx_T_gpu, dh_gpu, dW1_gpu, np.int32(epx.shape[0]), np.int32(dh.shape[1]), np.int32(dh.shape[1]),
-                 np.int32(epx.shape[1]), block=block, grid=grid)
 
     multiply(epx_T_gpu, dh_gpu, dW1_gpu, np.int32(epx.shape[1]), np.int32(epx.shape[0]), np.int32(dh.shape[0]),
              np.int32(dh.shape[1]), np.int32(dW1.shape[0]), np.int32(dW1.shape[1]), block=block, grid=grid)
