@@ -70,15 +70,17 @@ mod = SourceModule("""
 
     }
     
-    __global__ void transpose(float *odata, const float *idata,
+    __global__ void transpose(float *odata, const float **idata,
         const int width, const int height)
     {
         __shared__ float tile[32][33];
         int x = blockIdx.x * 32 + threadIdx.x;
         int y = blockIdx.y * 32 + threadIdx.y;
 
+        printf("x: %d, y: %d, width:%d, height:%d, (x < width && y < height): %d \\n", x, y, width, height, (x < width && y < height));
         if (x < width && y < height) {
-            tile[threadIdx.y][threadIdx.x] = idata[y*width + x];
+            printf("VALUE IS: %d \\n", idata[y*width][x]);
+            tile[threadIdx.y][threadIdx.x] = idata[y*width][x];
         }
 
         __syncthreads();
@@ -87,6 +89,7 @@ mod = SourceModule("""
         y = blockIdx.x * 32 + threadIdx.y;
 
         if (y < width && x < height) {
+            printf("!\\n");
             odata[y*height + x] = tile[threadIdx.x][threadIdx.y];
         }
     }
@@ -306,10 +309,10 @@ def forward():
     # print("Number of mistakes for softmax: %d" % (np.abs(predictions - softmax_cpu(y)) > 0.001).sum())
     # print("Prediction probabilities: %s" % str(predictions))
 
-    return predictions, W1_out
+    return predictions, W1_out_gpu, W1_out
 
 
-def backward(eph, epdlogp, epx):
+def backward(eph, eph_test, epdlogp, epx):
 
     multiply = mod.get_function("multiply")
     transpose = mod.get_function("transpose")
@@ -323,11 +326,14 @@ def backward(eph, epdlogp, epx):
     dW2 = np.zeros((eph.shape[1], epdlogp.shape[1])).astype(np.float32)
     dW1 = np.zeros((epx.shape[1], model['W2'].shape[0])).astype(np.float32)
 
+    eph_test = eph_test.astype(np.float32)
+    print(eph.shape)
+    print(eph_test.shape)
     # TODO Look into adding streams to allocations and memcpy
     eph_gpu = cuda.mem_alloc(eph.nbytes)
     epdlogp_gpu = cuda.mem_alloc(epdlogp.nbytes)
     epx_gpu = cuda.mem_alloc(epx.nbytes)
-    eph_T_gpu = cuda.mem_alloc(eph.nbytes)
+    eph_T_gpu = cuda.mem_alloc(eph_test.nbytes)
     epx_T_gpu = cuda.mem_alloc(epx.nbytes)
     W2_gpu = cuda.mem_alloc(model['W2'].nbytes)
     W2_T_gpu = cuda.mem_alloc(model['W2'].nbytes)
@@ -341,20 +347,24 @@ def backward(eph, epdlogp, epx):
     cuda.memcpy_htod(epdlogp_gpu, epdlogp)
 
     # --- eph transpose ---
-
+    print(eph_test)
     # DEBUG
-    # eph_T = np.zeros((eph.shape[1], eph.shape[0])).astype(np.float32)
+    eph_T = np.zeros((eph_test.shape[1], eph_test.shape[0])).astype(np.float32)
     dh = np.zeros((epdlogp.shape[0], model['W2'].shape[0])).astype(np.float32)
 
     block_x, block_y = 32, 32
     block = (block_x, block_y, 1)
-    grid = (int(math.ceil(eph.shape[1] / block_x)), int(math.ceil(eph.shape[0]/block_y)))
+    grid = (int(math.ceil(eph_test.shape[1] / block_x)), int(math.ceil(eph_test.shape[0]/block_y)))
+    print(block)
+    print(grid)
 
-    transpose(eph_T_gpu, eph_gpu, np.int32(eph.shape[1]), np.int32(eph.shape[0]), block=block, grid=grid)
+    transpose(eph_T_gpu, eph_gpu, np.int32(eph_test.shape[1]), np.int32(eph_test.shape[0]), block=block, grid=grid)
 
     # DEBUG
-    # cuda.memcpy_dtoh(eph_T, eph_T_gpu)
-    # print("Number of mistakes for Transpose (eph): %d" % (np.abs(eph_T - eph.T) > 0.001).sum())
+    cuda.memcpy_dtoh(eph_T, eph_T_gpu)
+    print("eph_T.shape: %s" % str(eph_T.shape))
+    print("eph_test.T.shape: %s" % str(eph_test.T.shape))
+    print("Number of mistakes for Transpose (eph): %d" % (np.abs(eph_T - eph_test.T) > 0.001).sum())
 
 
     # --------------------
@@ -462,8 +472,8 @@ def next_round():
     # forward()
 
 
-def update_learning_params(xs, hs, dlogps, rewards, action_raise=False):
-    action_prob, h = forward()
+def update_learning_params(xs, hs, h_test, dlogps, rewards, action_raise=False):
+    action_prob, h, h1 = forward()
 
     action = pick_action(action_prob)
 
@@ -474,6 +484,7 @@ def update_learning_params(xs, hs, dlogps, rewards, action_raise=False):
         action = 0
 
     hs.append(h)
+    h_test.append(h1)
 
     # https://math.stackexchange.com/questions/945871/derivative-of-softmax-loss-function
     dlogsoftmax = action_prob
@@ -507,7 +518,7 @@ def handle_action(action, rewards):
         rewards.append(1 * game.get_num_bets())
         return True
     elif Constants.ACTIONS[bot2_action] == "RAISE":
-        action = update_learning_params(xs, hs, dlogps, rewards, action_raise=True)
+        action = update_learning_params(xs, hs, hs_test, dlogps, rewards, action_raise=True)
         rewards.append(0)
         if Constants.ACTIONS[action] == "FOLD":
             rewards.append(-1 * game.get_num_bets())
@@ -522,13 +533,13 @@ def handle_action(action, rewards):
 
 import time
 start = time.time()
-xs, hs, dlogps, rewards = [], [], [], []
+xs, hs, dlogps, rewards, hs_test = [], [], [], [], []
 for i in range(NUM_EPISODES):
     game.new_game()
 
     for _ in range(3):
 
-        action = update_learning_params(xs, hs, dlogps, rewards)
+        action = update_learning_params(xs, hs, hs_test, dlogps, rewards)
         is_fold = handle_action(action, rewards)
 
         if is_fold:
@@ -537,7 +548,7 @@ for i in range(NUM_EPISODES):
         next_round()
 
     if not is_fold:
-        action = update_learning_params(xs, hs, dlogps, rewards)
+        action = update_learning_params(xs, hs, hs_test, dlogps, rewards)
         is_fold = handle_action(action, rewards)
 
     if not is_fold:
@@ -569,10 +580,10 @@ for i in range(NUM_EPISODES):
         epdlogp = np.vstack(dlogps)
         epr = np.vstack(rewards)
         epdlogp *= epr
-
+    	eph_test = np.vstack(hs_test)
 
 #        grad2, dh3 = backward_policy(eph, epdlogp, epx)
-        grad, dh2 = backward(eph, epdlogp, epx)
+        grad, dh2 = backward(eph, eph_test, epdlogp, epx)
  
 #        print((np.abs(grad['W1'] - grad2['W1']) > 0.001).sum())
 #        print((np.abs(dh2 - dh3) > 0.001).sum())
@@ -599,7 +610,7 @@ for i in range(NUM_EPISODES):
                 #    if i%10 == 0:
                 #        print(rewards)
 
-        xs, hs, dlogps, rewards = [], [], [], []
+        xs, hs, dlogps, rewards, hs_test = [], [], [], [], []
 
     if i > 0 and i % 100 == 0:
         x = np.array(reward_count)
