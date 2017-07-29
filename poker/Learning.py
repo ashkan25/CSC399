@@ -70,17 +70,20 @@ mod = SourceModule("""
 
     }
     
-    __global__ void transpose(float *odata, const float **idata,
+//    __global__ void transpose(float *odata, const float **idata,
+    __global__ void transpose(float *odata, const float *idata,
         const int width, const int height)
     {
         __shared__ float tile[32][33];
         int x = blockIdx.x * 32 + threadIdx.x;
         int y = blockIdx.y * 32 + threadIdx.y;
 
-        printf("x: %d, y: %d, width:%d, height:%d, (x < width && y < height): %d \\n", x, y, width, height, (x < width && y < height));
+//        printf("x: %d, y: %d, width:%d, height:%d, (x < width && y < height): %d \\n", x, y, width, height, (x < width && y < height));
         if (x < width && y < height) {
-            printf("VALUE IS: %d \\n", idata[y*width][x]);
-            tile[threadIdx.y][threadIdx.x] = idata[y*width][x];
+//            printf("VALUE IS: %d \\n", idata[y*width + x]);
+            tile[threadIdx.y][threadIdx.x] = idata[y*width + x];
+//            printf("VALUE IS: %d \\n", idata[y*width][x]);
+//            tile[threadIdx.y][threadIdx.x] = idata[y*width][x];
         }
 
         __syncthreads();
@@ -89,7 +92,7 @@ mod = SourceModule("""
         y = blockIdx.x * 32 + threadIdx.y;
 
         if (y < width && x < height) {
-            printf("!\\n");
+//            printf("!\\n");
             odata[y*height + x] = tile[threadIdx.x][threadIdx.y];
         }
     }
@@ -323,7 +326,7 @@ def backward(eph, eph_test, epdlogp, epx):
 #    epdlogp = epdlogp.astype(np.float32)
 #    epx = epx.astype(np.float32)
 
-    dW2 = np.zeros((eph.shape[1], epdlogp.shape[1])).astype(np.float32)
+    dW2 = np.zeros((eph_test.shape[1], epdlogp.shape[1])).astype(np.float32)
     dW1 = np.zeros((epx.shape[1], model['W2'].shape[0])).astype(np.float32)
 
     eph_test = eph_test.astype(np.float32)
@@ -331,6 +334,7 @@ def backward(eph, eph_test, epdlogp, epx):
     print(eph_test.shape)
     # TODO Look into adding streams to allocations and memcpy
     eph_gpu = cuda.mem_alloc(eph.nbytes)
+#    eph_gpu = cuda.mem_alloc(eph_test.nbytes)
     epdlogp_gpu = cuda.mem_alloc(epdlogp.nbytes)
     epx_gpu = cuda.mem_alloc(epx.nbytes)
     eph_T_gpu = cuda.mem_alloc(eph_test.nbytes)
@@ -342,6 +346,7 @@ def backward(eph, eph_test, epdlogp, epx):
     dh_gpu = cuda.mem_alloc(epdlogp.shape[0] * model['W2'].shape[0] * np.float32().nbytes)
 
     cuda.memcpy_htod(eph_gpu, eph)
+#    cuda.memcpy_htod(eph_gpu, eph_test)
     cuda.memcpy_htod(epx_gpu, epx)
     cuda.memcpy_htod(W2_gpu, model['W2'])
     cuda.memcpy_htod(epdlogp_gpu, epdlogp)
@@ -576,7 +581,8 @@ for i in range(NUM_EPISODES):
         rewards = discount_rewards(rewards)
 
         epx = np.vstack(xs)
-        eph = np.vstack(hs)
+        #eph = np.vstack(hs)
+	eph = np.array(hs)
         epdlogp = np.vstack(dlogps)
         epr = np.vstack(rewards)
         epdlogp *= epr
