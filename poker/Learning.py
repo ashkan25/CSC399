@@ -34,7 +34,7 @@ mod = SourceModule("""
         }
     }
 
-    __global__ void relu_backwards(const int width, const int height, float* a, float* b) {
+    __global__ void relu_backwards(const int width, const int height, float* a, float** b) {
 
 
         int row = blockIdx.y * blockDim.y + threadIdx.y;
@@ -46,7 +46,7 @@ mod = SourceModule("""
 
         int index = col + row * width;
 
-        if (b[index] < 0) {
+        if (b[row][col] < 0) {
             a[index] = 0;
         }
     }
@@ -70,6 +70,27 @@ mod = SourceModule("""
 
     }
     
+    __global__ void transpose_pointer(float *odata, const float **idata,
+        const int width, const int height)
+    {
+        __shared__ float tile[32][33];
+        int x = blockIdx.x * 32 + threadIdx.x;
+        int y = blockIdx.y * 32 + threadIdx.y;
+
+        if (x < width && y < height) {
+            tile[threadIdx.y][threadIdx.x] = idata[y][x];
+        }
+
+        __syncthreads();
+
+        x = blockIdx.y * 32 + threadIdx.x; // transpose block offset
+        y = blockIdx.x * 32 + threadIdx.y;
+
+        if (y < width && x < height) {
+            odata[y*height + x] = tile[threadIdx.x][threadIdx.y];
+        }
+    }
+
     __global__ void transpose(float *odata, const float *idata,
         const int width, const int height)
     {
@@ -186,6 +207,7 @@ def pick_action(action_prob):
 def discount_rewards(rewards, discount_factor=0.98):
     discounted_r = np.zeros_like(rewards).astype(np.float32)
     running_add = 0
+
     for i in reversed(xrange(0, len(rewards))):
 
         # Final state of round
@@ -210,8 +232,17 @@ DECAY_RATE = 0.99  # decay factor for RMSProp leaky sum of grad^2
 actions = []
 reward_count = []
 model = {}
-model['W1'] = 0.1 * np.random.randn(num_inputs, num_hiddens[0]).astype(np.float32)
-model['W2'] = 0.1 * np.random.randn(num_hiddens[0], num_outputs).astype(np.float32)
+#model['W1'] = 0.1 * np.random.randn(num_inputs, num_hiddens[0]).astype(np.float32)
+#model['W2'] = 0.1 * np.random.randn(num_hiddens[0], num_outputs).astype(np.float32)
+#model['W1'].tofile("W1.txt")
+#model['W2'].tofile("W2.txt")
+
+model['W1'] = np.fromfile("W1.txt", dtype=np.float32).reshape((num_inputs, num_hiddens[0]))
+model['W2'] = np.fromfile("W2.txt", dtype=np.float32).reshape((num_hiddens[0], num_outputs))
+
+print(model['W1'].shape)
+print(model['W2'].shape)
+
 grad_buffer = {k: np.zeros_like(v) for k, v in model.iteritems()}
 rmsprop_cache = {k: np.zeros_like(v) for k, v in model.iteritems()}
 
@@ -274,9 +305,9 @@ def forward():
 
     relu(num_hiddens[0], np.int32(1), W1_out_gpu, block=block, grid=grid)
 
-    cuda.memcpy_dtoh(W1_out, W1_out_gpu)
 
     # DEBUG
+    # cuda.memcpy_dtoh(W1_out, W1_out_gpu)
     # debug_answer[debug_answer < 0] = 0 # RELU
     # print("Number of mistakes for RELU (Hidden 1): %d" % (np.abs(W1_out - debug_answer) > 0.001).sum())
 
@@ -306,13 +337,16 @@ def forward():
     # print("Number of mistakes for softmax: %d" % (np.abs(predictions - softmax_cpu(y)) > 0.001).sum())
     # print("Prediction probabilities: %s" % str(predictions))
 
-    return predictions, W1_out
+    return predictions, W1_out_gpu
 
 
 def backward(eph, epdlogp, epx):
 
+    eph_shape = (eph.shape[0], int(num_hiddens[0]))
+
     multiply = mod.get_function("multiply")
     transpose = mod.get_function("transpose")
+    transpose_pointer = mod.get_function("transpose_pointer")
     softmax = mod.get_function("softmax")
     relu_backwards = mod.get_function("relu_backwards")
 
@@ -320,14 +354,16 @@ def backward(eph, epdlogp, epx):
 #    epdlogp = epdlogp.astype(np.float32)
 #    epx = epx.astype(np.float32)
 
-    dW2 = np.zeros((eph.shape[1], epdlogp.shape[1])).astype(np.float32)
+    dW2 = np.zeros((eph_shape[1], epdlogp.shape[1])).astype(np.float32)
     dW1 = np.zeros((epx.shape[1], model['W2'].shape[0])).astype(np.float32)
 
+    #eph_test = eph_test.astype(np.float32)
     # TODO Look into adding streams to allocations and memcpy
     eph_gpu = cuda.mem_alloc(eph.nbytes)
     epdlogp_gpu = cuda.mem_alloc(epdlogp.nbytes)
     epx_gpu = cuda.mem_alloc(epx.nbytes)
-    eph_T_gpu = cuda.mem_alloc(eph.nbytes)
+#    eph_T_gpu = cuda.mem_alloc(eph_test.nbytes)
+    eph_T_gpu = cuda.mem_alloc(eph_shape[0]*eph_shape[1]*np.float32().nbytes)
     epx_T_gpu = cuda.mem_alloc(epx.nbytes)
     W2_gpu = cuda.mem_alloc(model['W2'].nbytes)
     W2_T_gpu = cuda.mem_alloc(model['W2'].nbytes)
@@ -343,18 +379,18 @@ def backward(eph, epdlogp, epx):
     # --- eph transpose ---
 
     # DEBUG
-    # eph_T = np.zeros((eph.shape[1], eph.shape[0])).astype(np.float32)
+    # eph_T = np.zeros((eph_test.shape[1], eph_test.shape[0])).astype(np.float32)
     dh = np.zeros((epdlogp.shape[0], model['W2'].shape[0])).astype(np.float32)
 
     block_x, block_y = 32, 32
     block = (block_x, block_y, 1)
-    grid = (int(math.ceil(eph.shape[1] / block_x)), int(math.ceil(eph.shape[0]/block_y)))
+    grid = (int(math.ceil(eph_shape[1] / block_x)), int(math.ceil(eph_shape[0]/block_y)))
 
-    transpose(eph_T_gpu, eph_gpu, np.int32(eph.shape[1]), np.int32(eph.shape[0]), block=block, grid=grid)
+    transpose_pointer(eph_T_gpu, eph_gpu, np.int32(eph_shape[1]), np.int32(eph_shape[0]), block=block, grid=grid)
 
     # DEBUG
     # cuda.memcpy_dtoh(eph_T, eph_T_gpu)
-    # print("Number of mistakes for Transpose (eph): %d" % (np.abs(eph_T - eph.T) > 0.001).sum())
+    # print("Number of mistakes for Transpose (eph): %d" % (np.abs(eph_T - eph_test.T) > 0.001).sum())
 
 
     # --------------------
@@ -364,10 +400,10 @@ def backward(eph, epdlogp, epx):
     block_x, block_y = 32, 32
     block = (block_x, block_y, 1)
     grid = (int(math.ceil(epdlogp.shape[1] / block_x)),
-            int(math.ceil(eph.shape[1] / block_x)))
+            int(math.ceil(eph_shape[1] / block_x)))
 
 
-    multiply(eph_T_gpu, epdlogp_gpu, dW2_gpu, np.int32(eph.shape[1]), np.int32(eph.shape[0]), np.int32(epdlogp.shape[0]),
+    multiply(eph_T_gpu, epdlogp_gpu, dW2_gpu, np.int32(eph_shape[1]), np.int32(eph_shape[0]), np.int32(epdlogp.shape[0]),
              np.int32(epdlogp.shape[1]), np.int32(dW2.shape[0]), np.int32(dW2.shape[1]), block=block, grid=grid)
 
     cuda.memcpy_dtoh(dW2, dW2_gpu)
@@ -415,7 +451,7 @@ def backward(eph, epdlogp, epx):
 
     # DEBUG
     # debug_answer = np.dot(epdlogp, model['W2'].T).astype(np.float32)
-    # debug_answer[eph < 0] = 0 # RELU
+    # debug_answer[eph_test < 0] = 0 # RELU
     # print("Number of mistakes for RELU (dh): %d" % (np.abs(dh - debug_answer) > 0.001).sum())
 
     # --------------------
@@ -446,7 +482,6 @@ def backward(eph, epdlogp, epx):
 
     multiply(epx_T_gpu, dh_gpu, dW1_gpu, np.int32(epx.shape[1]), np.int32(epx.shape[0]), np.int32(dh.shape[0]),
              np.int32(dh.shape[1]), np.int32(dW1.shape[0]), np.int32(dW1.shape[1]), block=block, grid=grid)
-
     
     cuda.memcpy_dtoh(dW1, dW1_gpu)
 
@@ -462,7 +497,7 @@ def next_round():
     # forward()
 
 
-def update_learning_params(xs, hs, dlogps, rewards, action_raise=False):
+def update_learning_params(xs, hs, h_test, dlogps, rewards, action_raise=False):
     action_prob, h = forward()
 
     action = pick_action(action_prob)
@@ -507,7 +542,7 @@ def handle_action(action, rewards):
         rewards.append(1 * game.get_num_bets())
         return True
     elif Constants.ACTIONS[bot2_action] == "RAISE":
-        action = update_learning_params(xs, hs, dlogps, rewards, action_raise=True)
+        action = update_learning_params(xs, hs, hs_test, dlogps, rewards, action_raise=True)
         rewards.append(0)
         if Constants.ACTIONS[action] == "FOLD":
             rewards.append(-1 * game.get_num_bets())
@@ -522,13 +557,13 @@ def handle_action(action, rewards):
 
 import time
 start = time.time()
-xs, hs, dlogps, rewards = [], [], [], []
+xs, hs, dlogps, rewards, hs_test = [], [], [], [], []
 for i in range(NUM_EPISODES):
     game.new_game()
 
     for _ in range(3):
 
-        action = update_learning_params(xs, hs, dlogps, rewards)
+        action = update_learning_params(xs, hs, hs_test, dlogps, rewards)
         is_fold = handle_action(action, rewards)
 
         if is_fold:
@@ -537,7 +572,7 @@ for i in range(NUM_EPISODES):
         next_round()
 
     if not is_fold:
-        action = update_learning_params(xs, hs, dlogps, rewards)
+        action = update_learning_params(xs, hs, hs_test, dlogps, rewards)
         is_fold = handle_action(action, rewards)
 
     if not is_fold:
@@ -561,24 +596,20 @@ for i in range(NUM_EPISODES):
 
     # Cannot be done on GPU, order must be preserved
 
-    if i > 0 and i % 100 == 0:
+    if i > 0 and i % 10 == 0:
         rewards = discount_rewards(rewards)
 
         epx = np.vstack(xs)
-        eph = np.vstack(hs)
+        #eph = np.vstack(hs)
+    	eph = np.array([np.uint64(int(j)) for j in hs]).astype(np.uint64)
         epdlogp = np.vstack(dlogps)
         epr = np.vstack(rewards)
         epdlogp *= epr
-
+#    	eph_test = np.vstack(hs_test)
 
 #        grad2, dh3 = backward_policy(eph, epdlogp, epx)
         grad, dh2 = backward(eph, epdlogp, epx)
  
-#        print((np.abs(grad['W1'] - grad2['W1']) > 0.001).sum())
-#        print((np.abs(dh2 - dh3) > 0.001).sum())
-#        print((np.abs(grad['W2'] - grad2['W2']) > 0.001).sum())
-
-
         for k in model:
             # accumulate grad over batch
             grad_buffer[k] += grad[k]
@@ -599,7 +630,7 @@ for i in range(NUM_EPISODES):
                 #    if i%10 == 0:
                 #        print(rewards)
 
-        xs, hs, dlogps, rewards = [], [], [], []
+        xs, hs, dlogps, rewards, hs_test = [], [], [], [], []
 
     if i > 0 and i % 100 == 0:
         x = np.array(reward_count)
@@ -610,6 +641,14 @@ for i in range(NUM_EPISODES):
             earning += values[i][1] * values[i][0]
         print(earning)
         reward_count = []
+
+
+
+end = time.time()
+print(end-start)
+
+
+
 
 x = np.array(reward_count)
 unique, counts = np.unique(x, return_counts=True)
@@ -628,6 +667,4 @@ for i in range(6, 11):
 print(earning)
 print(win)
 print(loss)
-end = time.time()
-print(end-start)
 
