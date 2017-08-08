@@ -135,7 +135,7 @@ def pick_action(action_prob):
 
 
 # Compute discount rewards. Give more recent rewards more weight.
-def discount_rewards(rewards, discount_factor=0.98):
+def discount_rewards(rewards, discount_factor=Constants.GAMMA):
     discounted_r = np.zeros_like(rewards).astype(np.float32)
     running_add = 0
     for i in reversed(xrange(0, len(rewards))):
@@ -152,18 +152,23 @@ def discount_rewards(rewards, discount_factor=0.98):
 # ------------------------------------------------------------------
 game = Game.Game()
 
-num_inputs = np.int32(52 * 3)
-num_outputs = np.int32(3)  # CALL/CHECK, RAISE, FOLD
-num_hiddens = [np.int32(1024)]  # Each value represents number of nodes per layer
-NUM_EPISODES = 1000
-LEARNING_RATE = 1e-3
-GAMMA = 0.99  # discount factor for reward
-DECAY_RATE = 0.99  # decay factor for RMSProp leaky sum of grad^2
+num_inputs = np.int32(Constants.HAND_INPUT_SIZE)
+num_outputs = np.int32(Constants.NUM_OUTPUTS)  # CALL/CHECK, RAISE, FOLD
+num_hiddens = [np.int32(Constants.NUM_NODE_HIDDEN)]  # Each value represents number of nodes per layer
 actions = []
 reward_count = []
 model = {}
-model['W1'] = 0.1 * np.random.randn(num_inputs, num_hiddens[0]).astype(np.float32) / np.sqrt(num_inputs)
-model['W2'] = 0.1 * np.random.randn(num_hiddens[0], num_outputs).astype(np.float32) / np.sqrt(num_hiddens[0])
+
+if Constants.RANDOM_WEIGHT_INIT:
+    model['W1'] = 0.1 * np.random.randn(num_inputs, num_hiddens[0]).astype(np.float32)
+    model['W2'] = 0.1 * np.random.randn(num_hiddens[0], num_outputs).astype(np.float32)
+    # Uncomment to save weights
+    #model['W1'].tofile("W1.txt")
+    #model['W2'].tofile("W2.txt")
+else:
+    model['W1'] = np.fromfile("W1.txt", dtype=np.float32).reshape((num_inputs, num_hiddens[0]))
+    model['W2'] = np.fromfile("W2.txt", dtype=np.float32).reshape((num_hiddens[0], num_outputs))
+
 model2 = {'W1': np.copy(model['W1']), 'W2': np.copy(model['W2'])}
 grad_buffer = {k: np.zeros_like(v) for k, v in model.iteritems()}
 rmsprop_cache = {k: np.zeros_like(v) for k, v in model.iteritems()}
@@ -244,7 +249,7 @@ import time
 
 start = time.time()
 xs, hs, dlogps, rewards = [], [], [], []
-for i in range(NUM_EPISODES):
+for i in range(Constants.NUM_OF_EPS):
     prob_i = i
     game.new_game()
 
@@ -301,10 +306,10 @@ for i in range(NUM_EPISODES):
                 g = grad_buffer[k]  # gradient
 
                 # RMSprop: Gradient descent optimization algorithms
-                rmsprop_cache[k] = DECAY_RATE * rmsprop_cache[k] + (1 - DECAY_RATE) * g ** 2
+                rmsprop_cache[k] = Constants.DECAY_RATE * rmsprop_cache[k] + (1 - Constants.DECAY_RATE) * g ** 2
 
                 # Update weights to minimize the error
-                model[k] -= LEARNING_RATE * g / (np.sqrt(rmsprop_cache[k]) + 1e-5)
+                model[k] -= Constants.LEARNING_RATE * g / (np.sqrt(rmsprop_cache[k]) + 1e-5)
 
                 # Reset grad buffer
                 grad_buffer[k] = np.zeros_like(v)

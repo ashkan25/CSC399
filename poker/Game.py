@@ -11,11 +11,8 @@ class Game:
         self._deck = Deck.Deck()
         self._round = 0
         self._bet = 1
-
-        # TODO Combine round and bet input with hand input to avoid combining every round
         self._round_input = np.zeros(52, dtype=np.float32)
         self._bet_input = np.array([1 if i % 13 == 0 or i % 13 == 1 else 0 for i in range(52)], dtype=np.float32)
-
         self._bot_cumsum_prob = list(np.cumsum(Constants.BOT_ACTION_PROBS))
 
         f = open("HandRanks.dat", "rb")
@@ -45,7 +42,6 @@ class Game:
         return np.concatenate((self._bot2.get_hand(), self._bet_input, self._round_input)).astype(np.float32)
 
     def next_round(self):
-
         if self._round == Constants.FLOP:
             flop_cards = self._deck.draw(3)
         else:
@@ -58,7 +54,6 @@ class Game:
 
     def get_num_bets(self):
         return self._bet
-
 
     def round_input_update(self):
         for i in range(Constants.NUM_OF_SUITS):
@@ -78,9 +73,7 @@ class Game:
             self._bet_input[self._bet*2 + 1 + i*13] = 1
         self._bet += 1
 
-
     def hand_strength(self, h):
-
         p = self._lookup_table[53 + h[0]]
         p = self._lookup_table[p + h[1]]
         p = self._lookup_table[p + h[2]]
@@ -92,9 +85,6 @@ class Game:
     def evaluate_winner(self, h1, h2):
         p1 = self.hand_strength(h1)
         p2 = self.hand_strength(h2)
-
-        #print("P1 HAND STRENGTH: %d" % p1)
-        #print("P2 HAND STRENGTH: %d" % p2)
 
         if p1 > p2:
             return 1
@@ -122,28 +112,3 @@ class Game:
             if r < v:
                 return i
         return i
-
-# lookup_table = array.array('i')
-# f = open("HandRanks.dat", "rb")
-# lookup_table.fromfile(f, 32487834)
-# print(len(lookup_table))
-# f.close()
-# # Needs to be casted to numpy array. Python array does not have buffer interface
-# lookup_table = np.array(lookup_table)
-
-# gpu_lookup_table = cuda.mem_alloc(lookup_table.nbytes)
-# cuda.memcpy_htod(gpu_lookup_table, lookup_table)
-
-
-if __name__ == '__main__':
-    game = Game()
-    game.new_game()
-    raw_input()
-    game.next_round()
-    raw_input()
-    game.next_round()
-    raw_input()
-    game.next_round()
-    print(game.evaluate_winner(game.get_p1_hand(), game.get_p2_hand()))
-    print(game.get_p1_hand())
-    print(game.get_p2_hand())

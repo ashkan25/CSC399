@@ -1,6 +1,4 @@
 from __future__ import division
-import Hand
-import Deck
 import pycuda.driver as cuda
 import pycuda.autoinit
 from pycuda.compiler import SourceModule
@@ -9,7 +7,6 @@ import numpy as np
 import Game
 import math
 
-# TODO Make sure you handle when matrix is bigger than NUM_BLOCKS*NUM_THREADS
 mod = SourceModule("""
 #include <stdio.h>
 #define TILE_DIM 32
@@ -156,43 +153,10 @@ def softmax_cpu(x):
     return np.exp(x) / np.exp(x).sum(axis=1, keepdims=True)
 
 
-# FOR TESTING CPU VS GPU
-# def forward(x):
-#     # W.T*x
-#     h1 = np.dot(model['W1'], x)
-#     # ReLU activation function
-#     h1[h1 < 0] = 0
-#
-#     h2 = np.dot(model['w2'], h1)
-#     h2[h2 < 0] = 0
-#
-#     y = np.dot(model['W2'], h2)
-#     return {
-#         'x': x,
-#         'h1': h1,
-#         'h2': h2,
-#         'y': y}
-
-
-# TODO backward pass. DO IN CUDA
-def backward_policy(eph, epdlogp, epx):
-    dW2 = eph.T.dot(epdlogp)
-
-    dh = epdlogp.dot(model['W2'].T)
-
-    dh[eph <= 0] = 0
-
-    # NOTE: epx can be an Nx1 matrix. When exported to CUDA, no transpose is required when shape is Nx1
-    dW1 = epx.T.dot(dh)
-
-    return {'W1': dW1, 'W2': dW2}, dh
-
-
 # Pick highest probability action, with a certain probability of picking a different choice
 def pick_action(action_prob):
     r = np.random.uniform()
     total = 0
-    # print(action_prob)
     for i, p in enumerate(action_prob[0]):
         total += p
         if r <= total:
@@ -203,8 +167,7 @@ def pick_action(action_prob):
 
 
 # Compute discount rewards. Give more recent rewards more weight.
-# TODO Check if it's possible to change function to work on GPU. Probably not, each value depends on the previous
-def discount_rewards(rewards, discount_factor=0.98):
+def discount_rewards(rewards, discount_factor=Constants.GAMMA):
     discounted_r = np.zeros_like(rewards).astype(np.float32)
     running_add = 0
 
@@ -222,58 +185,38 @@ def discount_rewards(rewards, discount_factor=0.98):
 # ------------------------------------------------------------------
 game = Game.Game()
 
-num_inputs = np.int32(52 * 3)  # TODO CALCULATE INPUT COUNT (Make 52x3, 52 for bets, 52 for round, 52 for hand)
-num_outputs = np.int32(3)  # CALL/CHECK, RAISE, FOLD
-num_hiddens = [np.int32(1024)]  # Each value represents number of nodes per layer
-NUM_EPISODES = 20000
-LEARNING_RATE = 1e-3
-GAMMA = 0.99  # discount factor for reward
-DECAY_RATE = 0.99  # decay factor for RMSProp leaky sum of grad^2
+num_inputs = np.int32(Constants.HAND_INPUT_SIZE)
+num_outputs = np.int32(Constants.NUM_OUTPUTS)  # CALL/CHECK, RAISE, FOLD
+num_hiddens = [np.int32(Constants.NUM_NODE_HIDDEN)]  # Each value represents number of nodes per layer
 actions = []
 reward_count = []
 model = {}
-#model['W1'] = 0.1 * np.random.randn(num_inputs, num_hiddens[0]).astype(np.float32)
-#model['W2'] = 0.1 * np.random.randn(num_hiddens[0], num_outputs).astype(np.float32)
-#model['W1'].tofile("W1.txt")
-#model['W2'].tofile("W2.txt")
 
-model['W1'] = np.fromfile("W1.txt", dtype=np.float32).reshape((num_inputs, num_hiddens[0]))
-model['W2'] = np.fromfile("W2.txt", dtype=np.float32).reshape((num_hiddens[0], num_outputs))
-
-print(model['W1'].shape)
-print(model['W2'].shape)
+if Constants.RANDOM_WEIGHT_INIT:
+    model['W1'] = 0.1 * np.random.randn(num_inputs, num_hiddens[0]).astype(np.float32)
+    model['W2'] = 0.1 * np.random.randn(num_hiddens[0], num_outputs).astype(np.float32)
+    # Uncomment to save weights
+    #model['W1'].tofile("W1.txt")
+    #model['W2'].tofile("W2.txt")
+else:
+    model['W1'] = np.fromfile("W1.txt", dtype=np.float32).reshape((num_inputs, num_hiddens[0]))
+    model['W2'] = np.fromfile("W2.txt", dtype=np.float32).reshape((num_hiddens[0], num_outputs))
 
 grad_buffer = {k: np.zeros_like(v) for k, v in model.iteritems()}
 rmsprop_cache = {k: np.zeros_like(v) for k, v in model.iteritems()}
 
+
 def forward():
-
-    # input = np.array([1, 2, 3, 4]).flatten().astype(np.float32)
-
-    # input = game._bot1.get_hand().flatten().astype(np.float32)
-    #    hand_input = game._bot1.get_hand()
-    #    round_input = game.get_round_input()
-    #    bet_input = game.get_bet_input()
-    #   input = np.concatenate((hand_input, bet_input, round_input)).astype(np.float32)
     input = game.get_input()
-
-    # print(input)
-    # print(input.shape)
-
 
     multiply = mod.get_function("multiply")
     softmax = mod.get_function("softmax")
     relu = mod.get_function("relu")
 
-    # print('---')
-    # print(input)
-    # print('---')
-
     W1_out = np.zeros((1, num_hiddens[0])).astype(np.float32)
     y = np.zeros((1, num_outputs)).astype(np.float32)
     predictions = np.zeros((1, num_outputs)).astype(np.float32)
 
-    # TODO Look into adding streams to allocations and memcpy
     input_gpu = cuda.mem_alloc(input.nbytes)
     W1_gpu = cuda.mem_alloc(model['W1'].nbytes)
     W2_gpu = cuda.mem_alloc(model['W2'].nbytes)
@@ -284,16 +227,11 @@ def forward():
     cuda.memcpy_htod(input_gpu, input)
     cuda.memcpy_htod(W1_gpu, model['W1'])
     cuda.memcpy_htod(W2_gpu, model['W2'])
-    #cuda.memcpy_htod(y_gpu, y)
-    #cuda.memcpy_htod(predictions_gpu, predictions)
 
     block_x, block_y = 32, 32
     block = (block_x, block_y, 1)
     grid = (int(math.ceil(model['W1'].shape[1] / block_x)),
             int(math.ceil(input.shape[0] / block_x)))
-
-    # print("BLOCK DIM: %s" % str(block))
-    # print("GRID  DIM: %s" % str(grid))
 
     multiply(input_gpu, W1_gpu, W1_out_gpu, np.int32(1), np.int32(input.shape[0]), np.int32(model['W1'].shape[0]),
              np.int32(model['W1'].shape[1]), np.int32(W1_out.shape[0]), np.int32(W1_out.shape[1]), block=block, grid=grid)
@@ -350,19 +288,12 @@ def backward(eph, epdlogp, epx):
     softmax = mod.get_function("softmax")
     relu_backwards = mod.get_function("relu_backwards")
 
-#    eph = eph.astype(np.float32)
-#    epdlogp = epdlogp.astype(np.float32)
-#    epx = epx.astype(np.float32)
-
     dW2 = np.zeros((eph_shape[1], epdlogp.shape[1])).astype(np.float32)
     dW1 = np.zeros((epx.shape[1], model['W2'].shape[0])).astype(np.float32)
 
-    #eph_test = eph_test.astype(np.float32)
-    # TODO Look into adding streams to allocations and memcpy
     eph_gpu = cuda.mem_alloc(eph.nbytes)
     epdlogp_gpu = cuda.mem_alloc(epdlogp.nbytes)
     epx_gpu = cuda.mem_alloc(epx.nbytes)
-#    eph_T_gpu = cuda.mem_alloc(eph_test.nbytes)
     eph_T_gpu = cuda.mem_alloc(eph_shape[0]*eph_shape[1]*np.float32().nbytes)
     epx_T_gpu = cuda.mem_alloc(epx.nbytes)
     W2_gpu = cuda.mem_alloc(model['W2'].nbytes)
@@ -392,9 +323,6 @@ def backward(eph, epdlogp, epx):
     # cuda.memcpy_dtoh(eph_T, eph_T_gpu)
     # print("Number of mistakes for Transpose (eph): %d" % (np.abs(eph_T - eph_test.T) > 0.001).sum())
 
-
-    # --------------------
-
     # --- Matrix multiply epdlogp and transpose of eph
 
     block_x, block_y = 32, 32
@@ -402,16 +330,13 @@ def backward(eph, epdlogp, epx):
     grid = (int(math.ceil(epdlogp.shape[1] / block_x)),
             int(math.ceil(eph_shape[1] / block_x)))
 
-
-    multiply(eph_T_gpu, epdlogp_gpu, dW2_gpu, np.int32(eph_shape[1]), np.int32(eph_shape[0]), np.int32(epdlogp.shape[0]),
-             np.int32(epdlogp.shape[1]), np.int32(dW2.shape[0]), np.int32(dW2.shape[1]), block=block, grid=grid)
+    multiply(eph_T_gpu, epdlogp_gpu, dW2_gpu, np.int32(eph_shape[1]), np.int32(eph_shape[0]), np.int32(epdlogp.shape[0])
+             ,np.int32(epdlogp.shape[1]), np.int32(dW2.shape[0]), np.int32(dW2.shape[1]), block=block, grid=grid)
 
     cuda.memcpy_dtoh(dW2, dW2_gpu)
 
     # DEBUG
     # print("Number of mistakes for dot product (dW2): %d" % (np.abs(dW2 - np.dot(eph_T, epdlogp)) > 0.001).sum())
-
-    # --------------------
 
     # --- W2 transpose ---
 
@@ -426,9 +351,6 @@ def backward(eph, epdlogp, epx):
     # cuda.memcpy_dtoh(W2_T, W2_T_gpu)
     # print("Number of mistakes for Transpose (W2): %d" % (np.abs(W2_T - model['W2'].T) > 0.01).sum())
 
-
-    # --------------------
-
     # --- Matrix multiply epdlogp and W2 transpose ---
 
     block_x, block_y = 32, 32
@@ -436,25 +358,22 @@ def backward(eph, epdlogp, epx):
     grid = (int(math.ceil(model['W2'].shape[0] / block_x)),
             int(math.ceil(epdlogp.shape[0] / block_x)))
 
-    
-    multiply(epdlogp_gpu, W2_T_gpu, dh_gpu, np.int32(epdlogp.shape[0]), np.int32(epdlogp.shape[1]), np.int32(model['W2'].shape[1]),
-             np.int32(model['W2'].shape[0]), np.int32(dh.shape[0]), np.int32(dh.shape[1]), block=block, grid=grid)
-
-    cuda.memcpy_dtoh(dh, dh_gpu)
+    multiply(epdlogp_gpu, W2_T_gpu, dh_gpu, np.int32(epdlogp.shape[0]), np.int32(epdlogp.shape[1]),
+             np.int32(model['W2'].shape[1]), np.int32(model['W2'].shape[0]), np.int32(dh.shape[0]),
+             np.int32(dh.shape[1]), block=block, grid=grid)
 
     # DEBUG
+    # cuda.memcpy_dtoh(dh, dh_gpu)
     # print("Number of mistakes for dot product (dh): %d" % (np.abs(dh - np.dot(epdlogp, model['W2'].T)) > 0.001).sum())
 
     relu_backwards(np.int32(dh.shape[1]), np.int32(dh.shape[0]), dh_gpu, eph_gpu, block=block, grid=grid)
 
-    cuda.memcpy_dtoh(dh, dh_gpu)
 
     # DEBUG
+    # cuda.memcpy_dtoh(dh, dh_gpu)
     # debug_answer = np.dot(epdlogp, model['W2'].T).astype(np.float32)
     # debug_answer[eph_test < 0] = 0 # RELU
     # print("Number of mistakes for RELU (dh): %d" % (np.abs(dh - debug_answer) > 0.001).sum())
-
-    # --------------------
 
     # --- W2 transpose ---
 
@@ -464,14 +383,10 @@ def backward(eph, epdlogp, epx):
 
     transpose(epx_T_gpu, epx_gpu, np.int32(epx.shape[1]), np.int32(epx.shape[0]), block=block, grid=grid)
 
-
     # DEBUG
     # epx_T = np.zeros((epx.shape[1], epx.shape[0])).astype(np.float32)
     # cuda.memcpy_dtoh(epx_T, epx_T_gpu)
     # print("Number of mistakes for Transpose (epx): %d" % (np.abs(epx_T - epx.T) > 0.01).sum())
-
-
-    # --------------------
 
     # --- Matrix multiply epx transpose and dh
 
@@ -482,14 +397,14 @@ def backward(eph, epdlogp, epx):
 
     multiply(epx_T_gpu, dh_gpu, dW1_gpu, np.int32(epx.shape[1]), np.int32(epx.shape[0]), np.int32(dh.shape[0]),
              np.int32(dh.shape[1]), np.int32(dW1.shape[0]), np.int32(dW1.shape[1]), block=block, grid=grid)
-    
+
     cuda.memcpy_dtoh(dW1, dW1_gpu)
 
     # DEBUG
     # debug_answer = np.dot(epx.T, dh)
     # print("Number of mistakes for dot product (dW1): %d" % (np.abs(dW1 - debug_answer) > 0.001).sum())
 
-    return {'W1' : dW1, 'W2': dW2}, dh
+    return {'W1': dW1, 'W2': dW2}
 
 def next_round():
     # raw_input()
@@ -497,7 +412,7 @@ def next_round():
     # forward()
 
 
-def update_learning_params(xs, hs, h_test, dlogps, rewards, action_raise=False):
+def update_learning_params(xs, hs, dlogps, action_raise=False):
     action_prob, h = forward()
 
     action = pick_action(action_prob)
@@ -530,9 +445,6 @@ def handle_action(action, rewards):
         rewards.append(-1 * game.get_num_bets())
         return True
     elif Constants.ACTIONS[action] == "RAISE":
-        # ALREADY RAISED, why making another action?
-        # action = update_learning_params(xs, hs, dlogps, rewards, action_raise=True)
-        # rewards.append(0)
         bot2_action = game.bot_decision(can_raise=False)
         # return handle_action(action, rewards, bot_can_raise=False)
     else:
@@ -542,7 +454,7 @@ def handle_action(action, rewards):
         rewards.append(1 * game.get_num_bets())
         return True
     elif Constants.ACTIONS[bot2_action] == "RAISE":
-        action = update_learning_params(xs, hs, hs_test, dlogps, rewards, action_raise=True)
+        action = update_learning_params(xs, hs, dlogps, action_raise=True)
         rewards.append(0)
         if Constants.ACTIONS[action] == "FOLD":
             rewards.append(-1 * game.get_num_bets())
@@ -557,13 +469,13 @@ def handle_action(action, rewards):
 
 import time
 start = time.time()
-xs, hs, dlogps, rewards, hs_test = [], [], [], [], []
-for i in range(NUM_EPISODES):
+xs, hs, dlogps, rewards = [], [], [], []
+for i in range(Constants.NUM_OF_EPS):
     game.new_game()
 
     for _ in range(3):
 
-        action = update_learning_params(xs, hs, hs_test, dlogps, rewards)
+        action = update_learning_params(xs, hs, dlogps)
         is_fold = handle_action(action, rewards)
 
         if is_fold:
@@ -572,7 +484,7 @@ for i in range(NUM_EPISODES):
         next_round()
 
     if not is_fold:
-        action = update_learning_params(xs, hs, hs_test, dlogps, rewards)
+        action = update_learning_params(xs, hs, dlogps)
         is_fold = handle_action(action, rewards)
 
     if not is_fold:
@@ -583,33 +495,20 @@ for i in range(NUM_EPISODES):
 
         rewards.append(reward * game.get_num_bets())  # +1 / -1 depending on who wins. 0 for tie
 
-    # print(rewards)
-
     # DEBUG
-    reward_count.append(rewards[-1])
-
-    # standardize the rewards
-    # (Special Case) Don't standardize if someone folds at the start (preflop)
-    #    if len(rewards) != 1:
-    #        rewards -= np.mean(rewards).astype(np.float32)
-    #        rewards /= np.std(rewards).astype(np.float32)
-
-    # Cannot be done on GPU, order must be preserved
+    # reward_count.append(rewards[-1])
 
     if i > 0 and i % 10 == 0:
         rewards = discount_rewards(rewards)
 
         epx = np.vstack(xs)
-        #eph = np.vstack(hs)
     	eph = np.array([np.uint64(int(j)) for j in hs]).astype(np.uint64)
         epdlogp = np.vstack(dlogps)
         epr = np.vstack(rewards)
         epdlogp *= epr
-#    	eph_test = np.vstack(hs_test)
 
-#        grad2, dh3 = backward_policy(eph, epdlogp, epx)
-        grad, dh2 = backward(eph, epdlogp, epx)
- 
+        grad = backward(eph, epdlogp, epx)
+
         for k in model:
             # accumulate grad over batch
             grad_buffer[k] += grad[k]
@@ -619,18 +518,15 @@ for i in range(NUM_EPISODES):
                 g = grad_buffer[k]  # gradient
 
                 # RMSprop: Gradient descent optimization algorithms
-                rmsprop_cache[k] = DECAY_RATE * rmsprop_cache[k] + (1 - DECAY_RATE) * g ** 2
+                rmsprop_cache[k] = Constants.DECAY_RATE * rmsprop_cache[k] + (1 - Constants.DECAY_RATE) * g ** 2
 
                 # Update weights to minimize the error
-                model[k] -= LEARNING_RATE * g / (np.sqrt(rmsprop_cache[k]) + 1e-5)
+                model[k] -= Constants.LEARNING_RATE * g / (np.sqrt(rmsprop_cache[k]) + 1e-5)
 
                 # Reset grad buffer
                 grad_buffer[k] = np.zeros_like(v)
 
-                #    if i%10 == 0:
-                #        print(rewards)
-
-        xs, hs, dlogps, rewards, hs_test = [], [], [], [], []
+        xs, hs, dlogps, rewards = [], [], [], []
 
     if i > 0 and i % 100 == 0:
         x = np.array(reward_count)
@@ -642,14 +538,10 @@ for i in range(NUM_EPISODES):
         print(earning)
         reward_count = []
 
-
-
 end = time.time()
 print(end-start)
 
-
-
-
+# Performance of algorithm
 x = np.array(reward_count)
 unique, counts = np.unique(x, return_counts=True)
 

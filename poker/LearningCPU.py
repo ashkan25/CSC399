@@ -1,10 +1,7 @@
 from __future__ import division
-import Hand
-import Deck
 import Constants
 import numpy as np
 import Game
-import math
 
 
 def softmax_cpu(x):
@@ -19,12 +16,10 @@ def forward_policy(x):
     h[h < 0] = 0
     logp = np.dot(h, model['W2'])
 
+    # Add ceiling and floor values to avoid overflow
     p = softmax_cpu(np.clip(logp, -100, 80))
 
-    if np.isnan(p).any():
-        print p
-
-    return p,h
+    return p, h
 
 
 def forward_policy_P2(x):
@@ -35,12 +30,10 @@ def forward_policy_P2(x):
     h[h < 0] = 0
     logp = np.dot(h, model2['W2'])
 
+    # Add ceiling and floor values to avoid overflow
     p = softmax_cpu(np.clip(logp, -100, 80))
 
-    if np.isnan(p).any():
-        print p
-
-    return p,h
+    return p, h
 
 
 def backward_policy(eph, epdlogp, epx):
@@ -49,7 +42,6 @@ def backward_policy(eph, epdlogp, epx):
     dh = epdlogp.dot(model['W2'].T)
     dh[eph <= 0] = 0
 
-    # NOTE: epx can be an Nx1 matrix. When exported to CUDA, no transpose is required when shape is Nx1
     dW1 = epx.T.dot(dh)
 
     return {'W1': dW1, 'W2': dW2}
@@ -60,8 +52,6 @@ def pick_action(action_prob):
     r = np.random.uniform()
     total = 0
 
-    if prob_i % 2000 == 0:
-        print(action_prob)
     for i, p in enumerate(action_prob):
         total += p
         if r <= total:
@@ -72,7 +62,7 @@ def pick_action(action_prob):
 
 
 # Compute discount rewards. Give more recent rewards more weight.
-def discount_rewards(rewards, discount_factor=0.98):
+def discount_rewards(rewards, discount_factor=Constants.GAMMA):
     discounted_r = np.zeros_like(rewards).astype(np.float32)
     running_add = 0
     for i in reversed(xrange(0, len(rewards))):
@@ -89,18 +79,23 @@ def discount_rewards(rewards, discount_factor=0.98):
 # ------------------------------------------------------------------
 game = Game.Game()
 
-num_inputs = np.int32(52 * 3)
-num_outputs = np.int32(3)  # CALL/CHECK, RAISE, FOLD
-num_hiddens = [np.int32(1024)]  # Each value represents number of nodes per layer
-NUM_EPISODES = 20000
-LEARNING_RATE = 1e-3
-GAMMA = 0.99  # discount factor for reward
-DECAY_RATE = 0.99  # decay factor for RMSProp leaky sum of grad^2
+num_inputs = np.int32(Constants.HAND_INPUT_SIZE)
+num_outputs = np.int32(Constants.NUM_OUTPUTS)  # CALL/CHECK, RAISE, FOLD
+num_hiddens = [np.int32(Constants.NUM_NODE_HIDDEN)]  # Each value represents number of nodes per layer
 actions = []
 reward_count = []
 model = {}
-model['W1'] = 0.1 * np.random.randn(num_inputs, num_hiddens[0]).astype(np.float32) / np.sqrt(num_inputs)
-model['W2'] = 0.1 * np.random.randn(num_hiddens[0], num_outputs).astype(np.float32) / np.sqrt(num_hiddens[0])
+
+if Constants.RANDOM_WEIGHT_INIT:
+    model['W1'] = 0.1 * np.random.randn(num_inputs, num_hiddens[0]).astype(np.float32)
+    model['W2'] = 0.1 * np.random.randn(num_hiddens[0], num_outputs).astype(np.float32)
+    # Uncomment to save weights
+    #model['W1'].tofile("W1.txt")
+    #model['W2'].tofile("W2.txt")
+else:
+    model['W1'] = np.fromfile("W1.txt", dtype=np.float32).reshape((num_inputs, num_hiddens[0]))
+    model['W2'] = np.fromfile("W2.txt", dtype=np.float32).reshape((num_hiddens[0], num_outputs))
+
 model2 = {'W1': np.copy(model['W1']), 'W2': np.copy(model['W2'])}
 grad_buffer = {k: np.zeros_like(v) for k, v in model.iteritems()}
 rmsprop_cache = {k: np.zeros_like(v) for k, v in model.iteritems()}
@@ -111,7 +106,7 @@ def next_round():
     game.next_round()
 
 
-def update_learning_params(xs, hs, dlogps, rewards, action_raise=False):
+def update_learning_params(xs, hs, dlogps, action_raise=False):
     action_prob, h = forward_policy(game.get_input())
 
     action = pick_action(action_prob)
@@ -151,12 +146,8 @@ def handle_action(action, rewards):
         rewards.append(-1 * game.get_num_bets())
         return True
     elif Constants.ACTIONS[action] == "RAISE":
-        # ALREADY RAISED, why making another action?
-        # action = update_learning_params(xs, hs, dlogps, rewards, action_raise=True)
-        # rewards.append(0)
         # bot2_action = game.bot_decision(can_raise=False)
         bot2_action = opponent_action(action_raise=False)
-        # return handle_action(action, rewards, bot_can_raise=False)
     else:
         # bot2_action = game.bot_decision(can_raise=True)
         bot2_action = opponent_action(action_raise=True)
@@ -165,7 +156,7 @@ def handle_action(action, rewards):
         rewards.append(1 * game.get_num_bets())
         return True
     elif Constants.ACTIONS[bot2_action] == "RAISE":
-        action = update_learning_params(xs, hs, dlogps, rewards, action_raise=True)
+        action = update_learning_params(xs, hs, dlogps, action_raise=True)
         rewards.append(0)
         if Constants.ACTIONS[action] == "FOLD":
             rewards.append(-1 * game.get_num_bets())
@@ -183,13 +174,13 @@ import time
 
 start = time.time()
 xs, hs, dlogps, rewards = [], [], [], []
-for i in range(NUM_EPISODES):
+for i in range(Constants.NUM_OF_EPS):
     prob_i = i
     game.new_game()
 
     for _ in range(3):
 
-        action = update_learning_params(xs, hs, dlogps, rewards)
+        action = update_learning_params(xs, hs, dlogps)
         is_fold = handle_action(action, rewards)
 
         if is_fold:
@@ -198,7 +189,7 @@ for i in range(NUM_EPISODES):
         next_round()
 
     if not is_fold:
-        action = update_learning_params(xs, hs, dlogps, rewards)
+        action = update_learning_params(xs, hs, dlogps)
         is_fold = handle_action(action, rewards)
 
     if not is_fold:
@@ -209,19 +200,11 @@ for i in range(NUM_EPISODES):
 
         rewards.append(reward * game.get_num_bets())  # +1 / -1 depending on who wins. 0 for tie
 
-    # print(rewards)
-
     # DEBUG
     reward_count.append(rewards[-1])
 
     if i % 1000 == 0:
         rewards = discount_rewards(rewards)
-
-        # standardize the rewards
-        # (Special Case) Don't standardize if someone folds at the start (preflop)
-        # if len(rewards) != 1:
-        #     rewards -= np.mean(rewards).astype(np.float32)
-        #     rewards /= np.std(rewards).astype(np.float32)
 
         epx = np.vstack(xs)
         eph = np.vstack(hs)
@@ -240,16 +223,13 @@ for i in range(NUM_EPISODES):
                 g = grad_buffer[k]  # gradient
 
                 # RMSprop: Gradient descent optimization algorithms
-                rmsprop_cache[k] = DECAY_RATE * rmsprop_cache[k] + (1 - DECAY_RATE) * g ** 2
+                rmsprop_cache[k] = Constants.DECAY_RATE * rmsprop_cache[k] + (1 - Constants.DECAY_RATE) * g ** 2
 
                 # Update weights to minimize the error
-                model[k] -= LEARNING_RATE * g / (np.sqrt(rmsprop_cache[k]) + 1e-5)
+                model[k] -= Constants.LEARNING_RATE * g / (np.sqrt(rmsprop_cache[k]) + 1e-5)
 
                 # Reset grad buffer
                 grad_buffer[k] = np.zeros_like(v)
-
-                if np.isnan(model['W1']).any():
-                    print(1)
 
         xs, hs, dlogps, rewards = [], [], [], []
 
@@ -272,7 +252,6 @@ unique, counts = np.unique(x, return_counts=True)
 end = time.time()
 print(end - start)
 
-
 values = np.asarray((unique, counts)).T
 print(values)
 earning = 0
@@ -287,4 +266,3 @@ for i in range(6, 11):
 print(earning)
 print(win)
 print(loss)
-

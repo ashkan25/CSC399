@@ -1,6 +1,15 @@
 NUM_OF_VALUES = 13
 NUM_OF_SUITS = 4
 NUM_OF_ROUNDS = 4
+NUM_CARDS_IN_HAND = 2
+HAND_INPUT_SIZE = 156
+NUM_OUTPUTS = 3
+NUM_NODE_HIDDEN = 1024
+NUM_OF_EPS = 20000
+LEARNING_RATE = 1e-3
+GAMMA = 0.98  # discount factor for reward
+DECAY_RATE = 0.99  # decay factor for RMSProp leaky sum of grad^2
+RANDOM_WEIGHT_INIT = True # hidden and output weights are randomized at the start
 # CHECK/CALL, RAISE, FOLD
 BOT_ACTION_PROBS = [0.7, 0.2, 0.1]
 ROUNDS = ["PREFLOP", "FLOP", "TURN", "RIVER"]
