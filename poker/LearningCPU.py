@@ -30,6 +30,8 @@ def forward_policy_P2(x):
     h[h < 0] = 0
     logp = np.dot(h, model2['W2'])
 
+    print(h.shape)
+    print(logp.shape)
     # Add ceiling and floor values to avoid overflow
     p = softmax_cpu(np.clip(logp, -100, 80))
 
@@ -203,7 +205,7 @@ for i in range(Constants.NUM_OF_EPS):
     # DEBUG
     reward_count.append(rewards[-1])
 
-    if i % 1000 == 0:
+    if i % 100 == 0:
         rewards = discount_rewards(rewards)
 
         epx = np.vstack(xs)
@@ -218,7 +220,7 @@ for i in range(Constants.NUM_OF_EPS):
             # accumulate grad over batch
             grad_buffer[k] += grad[k]
 
-        if i % 2000 == 0:
+        if i % 200 == 0:
             for k, v in model.iteritems():
                 g = grad_buffer[k]  # gradient
 
@@ -233,7 +235,7 @@ for i in range(Constants.NUM_OF_EPS):
 
         xs, hs, dlogps, rewards = [], [], [], []
 
-    if i > 0 and i % 2000 == 0:
+    if i > 0 and i % 200 == 0:
         x = np.array(reward_count)
         unique, counts = np.unique(x, return_counts=True)
         values = np.asarray((unique, counts)).T
@@ -243,7 +245,7 @@ for i in range(Constants.NUM_OF_EPS):
         print(earning)
         reward_count = []
 
-    if i > 0 and i % 4000 == 0:
+    if i > 0 and i % 1000 == 0:
         model2 = {'W1': np.copy(model['W1']), 'W2': np.copy(model['W2'])}
 
 x = np.array(reward_count)

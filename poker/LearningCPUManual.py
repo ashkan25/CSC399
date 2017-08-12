@@ -280,7 +280,7 @@ for i in range(Constants.NUM_OF_EPS):
     # DEBUG
     reward_count.append(rewards[-1])
 
-    if i > 0 and i % 10 == 0:
+    if i > 0 and i % 100 == 0:
         rewards = discount_rewards(rewards)
 
         # standardize the rewards
@@ -301,7 +301,7 @@ for i in range(Constants.NUM_OF_EPS):
             # accumulate grad over batch
             grad_buffer[k] += grad[k]
 
-        if i % 100 == 0:
+        if i % 200 == 0:
             for k, v in model.iteritems():
                 g = grad_buffer[k]  # gradient
 
@@ -319,7 +319,7 @@ for i in range(Constants.NUM_OF_EPS):
 
         xs, hs, dlogps, rewards = [], [], [], []
 
-    if i > 0 and i % 10 == 0:
+    if i > 0 and i % 200 == 0:
         x = np.array(reward_count)
         unique, counts = np.unique(x, return_counts=True)
         values = np.asarray((unique, counts)).T
